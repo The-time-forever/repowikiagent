@@ -1,0 +1,20 @@
+{
+  "name": "repowiki-local-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "面向开发者的本地化代码知识库生成 Agent",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm -r run dev",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# VS Code Extension
+packages/vscode-extension/
+*.vsix
+.vscode-test/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Test & Coverage
+coverage/
+.nyc_output/
+
+# Internal docs
+development.md
+
+# Logs
+*.log
+npm-debug.log*
+
+# Package artifacts and pnpm leftovers
+*.tgz
+_tmp_*
+
+# Config (sensitive)
+.npmrc
+.repowiki/
