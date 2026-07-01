@@ -11,7 +11,7 @@ const program = new Command();
 program
     .name('repowiki')
     .description('RepoWiki: 本地化代码库 Wiki 知识库生成工具')
-    .version('0.1.0');
+    .version('0.2.0');
 
 // 注册子命令
 program.addCommand(generateCommand);
