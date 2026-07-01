@@ -269,6 +269,48 @@ export class LLMClient {
         }
     }
 
+    /**
+     * 发送聊天请求并对文本响应做自定义校验，校验失败时追加纠正提示重试。
+     *
+     * 复用与 {@link chatJSON} 相同的"纠正式重试"骨架，但校验逻辑由调用方提供
+     * （例如引用行号校验）。始终返回最终内容与校验产出的值（即使未通过校验，
+     * 以便调用方保留尽力而为的结果）。
+     *
+     * @param messages - 聊天消息列表
+     * @param validate - 校验函数，返回 { ok, value, error }
+     * @param options  - 可选：maxFixes（默认 1）
+     */
+    async chatWithValidation<T>(
+        messages: ChatMessage[],
+        validate: (content: string) => { ok: boolean; value: T; error?: string },
+        options?: { maxFixes?: number },
+    ): Promise<{ content: string; value: T; ok: boolean }> {
+        const maxFixes = options?.maxFixes ?? 1;
+
+        let current = messages;
+        let last = await this.chat(current);
+        let result = validate(last.content);
+        let attempts = 0;
+
+        while (!result.ok && attempts < maxFixes) {
+            attempts += 1;
+            current = [
+                ...current,
+                { role: 'assistant', content: last.content },
+                {
+                    role: 'user',
+                    content:
+                        'Your previous output had the following problems. Fix them and output the full corrected document again (same language as before):\n' +
+                        (result.error ?? ''),
+                },
+            ];
+            last = await this.chat(current);
+            result = validate(last.content);
+        }
+
+        return { content: last.content, value: result.value, ok: result.ok };
+    }
+
     // ========================================================================
     // 私有方法
     // ========================================================================

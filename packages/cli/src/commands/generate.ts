@@ -7,15 +7,24 @@ import * as path from 'node:path';
 export const generateCommand = new Command('generate')
     .arguments('[path]')
     .description('为指定的项目目录生成 Wiki 文档')
-    .option('-o, --output <dir>', 'Wiki 输出目录（默认: <path>/docs/wiki）')
+    .option('-o, --output <dir>', 'Wiki 输出根目录（默认: <path>/.repowiki，语言树位于 <root>/<lang>）')
     .option('-m, --model <model>', '使用的大语言模型名称')
     .option('-c, --concurrency <number>', '并发大模型请求数', (val) => parseInt(val, 10), 3)
+    .option('-l, --lang <lang>', '文档语言：zh | en | both', 'en')
+    .option('-s, --strategy <strategy>', '目录组织策略：feature | package', 'feature')
+    .option('--force-rebuild', '强制全量重建，忽略已有元数据的增量更新')
     .option('--skip-llm', '免大模型，仅基于本地模板快速生成文档结构')
     .option('--json-stdout', '以 JSON Lines 格式流式输出执行进度（适用于集成 IDE 插件）')
     .action(async (targetPath, options) => {
         const workspacePath = path.resolve(targetPath || '.');
         const outputDir = options.output ? path.resolve(options.output) : undefined;
         const jsonStdout = !!options.jsonStdout;
+
+        // 解析语言：both → 依次生成 zh 与 en 两套语言树
+        const langOption = String(options.lang || 'en').toLowerCase();
+        const languages: Array<'zh' | 'en'> =
+            langOption === 'both' ? ['zh', 'en'] : langOption === 'zh' ? ['zh'] : ['en'];
+        const strategy = options.strategy === 'package' ? 'package' : 'feature';
 
         let spinner: ReturnType<typeof ora> | null = null;
 
@@ -57,14 +66,19 @@ export const generateCommand = new Command('generate')
         };
 
         try {
-            await runPipeline({
-                workspacePath,
-                outputDir,
-                modelName: options.model,
-                concurrency: options.concurrency,
-                skipLlm: !!options.skipLlm,
-                onProgress: handleProgress,
-            });
+            for (const lang of languages) {
+                await runPipeline({
+                    workspacePath,
+                    outputDir,
+                    modelName: options.model,
+                    concurrency: options.concurrency,
+                    skipLlm: !!options.skipLlm,
+                    lang,
+                    strategy,
+                    forceRebuild: !!options.forceRebuild,
+                    onProgress: handleProgress,
+                });
+            }
         } catch (err: any) {
             if (jsonStdout) {
                 // runPipeline 内部已经输出了 ERROR 事件，这里捕获只作为最终异常退出

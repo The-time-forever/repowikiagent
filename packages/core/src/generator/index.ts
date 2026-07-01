@@ -32,5 +32,14 @@ export {
 export {
     WikiGenerator,
     type WikiGeneratorConfig,
-    type PlannedPage,
 } from './wiki-generator.js';
+
+export {
+    slugify,
+    hashId,
+    buildDefaultCatalog,
+    flattenPlannedCatalog,
+    validateCatalog,
+    type PlannedCatalogNode,
+    type CatalogValidationResult,
+} from './catalog-builder.js';

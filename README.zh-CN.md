@@ -5,7 +5,14 @@
 
 [English](README.md) | 简体中文
 
-RepoWiki Agent 是一个本地优先的代码库 Wiki 生成 CLI。它会扫描项目结构、识别技术栈、提取模块和路由信息，并在 `docs/wiki` 下生成多页面 Markdown 文档。
+RepoWiki Agent 是一个本地优先的代码库 Wiki 生成 CLI。它会扫描项目结构、识别技术栈、规划分层主题树，并在 `.repowiki/<lang>/` 下生成多页面、**有据可查**的 Markdown 文档。
+
+亮点：
+
+- **可追溯引用** —— 每个涉及代码的章节都引用真实的 `file://path#Lstart-Lend` 行号，并对照扫描到的文件做校验（非法引用会触发纠正式重试）。
+- **分层目录** —— 概览 → 分区 → 各模块/各 API 的主题树，含分区着陆页。
+- **双语** —— 可生成 `zh`、`en` 或 `both`；标签与图表均随语言切换。
+- **增量更新** —— 再次运行只重生成源码发生变化的页面（基于元数据依赖图）；无变更则不做任何改动。
 
 当前公开包聚焦 CLI：
 
@@ -33,10 +40,18 @@ repowiki --help
 repowiki generate .
 ```
 
-默认输出目录：
+默认按语言输出到：
 
 ```text
-docs/wiki
+.repowiki/<lang>/content/                        # Wiki 页面
+.repowiki/<lang>/meta/repowiki-metadata.json     # 增量更新依赖图
+```
+
+例如 `.repowiki/en/`。可指定语言（或同时生成两种）：
+
+```powershell
+repowiki generate . --lang zh
+repowiki generate . --lang both
 ```
 
 不使用大模型，仅用本地静态分析和模板生成：
@@ -96,12 +111,19 @@ repowiki generate [path]
 常用参数：
 
 ```text
--o, --output <dir>       输出目录
+-o, --output <dir>       输出根目录（默认 <path>/.repowiki，语言树位于 <root>/<lang>）
 -m, --model <model>      覆盖默认模型名
--c, --concurrency <n>    大模型请求并发数
+-c, --concurrency <n>    大模型请求并发数（现已真正并行分析与页面生成）
+-l, --lang <lang>        文档语言：zh | en | both（默认 en）
+-s, --strategy <s>       目录组织策略：feature | package（默认 feature）
+--force-rebuild          强制全量重建，忽略已有元数据的增量更新
 --skip-llm               使用本地模式生成
 --json-stdout            以 JSON Lines 输出进度
 ```
+
+### 增量更新
+
+首次生成后，`.repowiki/<lang>/meta/repowiki-metadata.json` 会记录每个页面的 `dependent_files` 及其内容指纹。再次运行 `repowiki generate` 时，会检测变更文件（有 `git` 时走 git 快路，否则按内容哈希），反查受影响页面并**只重生成这些页**，其余页面原样保留；无变更时报告"已是最新"且不写入任何文件。使用 `--force-rebuild` 可跳过增量、全量重建。
 
 ```powershell
 repowiki scan [path] --pretty

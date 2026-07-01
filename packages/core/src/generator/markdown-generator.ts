@@ -1,9 +1,15 @@
 import { type SourceReference } from '../models/index.js';
+import { getLabels, type WikiLabels } from '../i18n/labels.js';
 
 /**
  * Markdown 文档生成工具集
  * 提供格式化表格、源码引用链接、页面结构等工具函数
+ *
+ * 所有面向文档的字符串均通过 {@link WikiLabels} 注入，实现语言无关。
+ * 为向后兼容，`labels` 参数默认使用中文标签集。
  */
+
+const DEFAULT_LABELS = getLabels('zh');
 
 /**
  * 生成 Markdown 表格
@@ -36,12 +42,16 @@ export function formatSourceRef(
 /**
  * 生成源码引用块（章节来源）
  */
-export function formatSectionSource(refs: SourceReference[], projectRoot: string): string {
+export function formatSectionSource(
+    refs: SourceReference[],
+    projectRoot: string,
+    labels: WikiLabels = DEFAULT_LABELS,
+): string {
     if (refs.length === 0) return '';
 
     const lines = [
         '',
-        '> **章节来源**',
+        `> **${labels.sectionSource}**`,
         ...refs.map(ref => `> - ${formatSourceRef(ref, projectRoot)}`),
         ''
     ];
@@ -51,12 +61,16 @@ export function formatSectionSource(refs: SourceReference[], projectRoot: string
 /**
  * 生成图表来源引用
  */
-export function formatDiagramSource(refs: SourceReference[], projectRoot: string): string {
+export function formatDiagramSource(
+    refs: SourceReference[],
+    projectRoot: string,
+    labels: WikiLabels = DEFAULT_LABELS,
+): string {
     if (refs.length === 0) return '';
 
     const lines = [
         '',
-        '> **图表来源**',
+        `> **${labels.diagramSource}**`,
         ...refs.map(ref => `> - ${formatSourceRef(ref, projectRoot)}`),
         ''
     ];
@@ -66,7 +80,11 @@ export function formatDiagramSource(refs: SourceReference[], projectRoot: string
 /**
  * 生成 <cite> 引用块，列出所有被引用的源码文件
  */
-export function formatCiteBlock(refs: SourceReference[], projectRoot: string): string {
+export function formatCiteBlock(
+    refs: SourceReference[],
+    projectRoot: string,
+    labels: WikiLabels = DEFAULT_LABELS,
+): string {
     if (refs.length === 0) return '';
 
     // 去重文件路径
@@ -75,7 +93,7 @@ export function formatCiteBlock(refs: SourceReference[], projectRoot: string): s
 
     const lines = [
         '<cite>',
-        '**本文引用的文件**',
+        `**${labels.citeHeader}**`,
         ...uniqueFiles.map(fp => {
             const normalized = fp.replace(/\\/g, '/');
             return `- [${fp}](file://${normalizedRoot}/${normalized})`;
@@ -89,9 +107,9 @@ export function formatCiteBlock(refs: SourceReference[], projectRoot: string): s
 /**
  * 生成目录（Table of Contents）
  */
-export function formatToc(headings: string[]): string {
+export function formatToc(headings: string[], labels: WikiLabels = DEFAULT_LABELS): string {
     const lines = [
-        '## 目录',
+        `## ${labels.tocHeading}`,
         '',
         ...headings.map((h, i) => `${i + 1}. [${h}](#${headingToAnchor(h)})`)
     ];
@@ -104,7 +122,7 @@ export function formatToc(headings: string[]): string {
 function headingToAnchor(heading: string): string {
     return heading
         .toLowerCase()
-        .replace(/[^\w\u4e00-\u9fff\s-]/g, '')
+        .replace(/[^\w一-鿿\s-]/g, '')
         .replace(/\s+/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '');
@@ -114,11 +132,11 @@ function headingToAnchor(heading: string): string {
  * 生成文件列表表格
  */
 export function formatFileTable(
-    files: Array<{ path: string; description: string }>
+    files: Array<{ path: string; description: string }>,
+    labels: WikiLabels = DEFAULT_LABELS,
 ): string {
-    const headers = ['文件', '作用'];
     const rows = files.map(f => [`\`${f.path}\``, f.description]);
-    return generateTable(headers, rows);
+    return generateTable([...labels.fileTableHeaders], rows);
 }
 
 /**
@@ -132,11 +150,11 @@ export function wrapMermaid(code: string): string {
  * 生成故障排查表格
  */
 export function formatTroubleshootingTable(
-    issues: Array<{ problem: string; cause: string; resolution: string }>
+    issues: Array<{ problem: string; cause: string; resolution: string }>,
+    labels: WikiLabels = DEFAULT_LABELS,
 ): string {
-    const headers = ['问题', '可能原因', '排查方式'];
     const rows = issues.map(i => [i.problem, i.cause, i.resolution]);
-    return generateTable(headers, rows);
+    return generateTable([...labels.troubleshootingHeaders], rows);
 }
 
 /**
@@ -147,6 +165,7 @@ export function assembleWikiPage(sections: {
     title: string;
     citeRefs: SourceReference[];
     projectRoot: string;
+    labels?: WikiLabels;
     introduction: string;
     projectStructure?: string;
     projectStructureDiagram?: string;
@@ -160,6 +179,8 @@ export function assembleWikiPage(sections: {
     conclusion?: string;
     appendix?: string;
 }): string {
+    const labels = sections.labels ?? DEFAULT_LABELS;
+    const S = labels.sections;
     const parts: string[] = [];
 
     // 1. 标题
@@ -168,30 +189,30 @@ export function assembleWikiPage(sections: {
 
     // 2. cite 引用块
     if (sections.citeRefs.length > 0) {
-        parts.push(formatCiteBlock(sections.citeRefs, sections.projectRoot));
+        parts.push(formatCiteBlock(sections.citeRefs, sections.projectRoot, labels));
     }
 
     // 收集目录项
     const tocItems: string[] = [];
-    if (sections.introduction) tocItems.push('引言');
-    if (sections.projectStructure) tocItems.push('项目结构与关系');
-    if (sections.coreComponents) tocItems.push('核心组件总览');
-    if (sections.architectureOverview) tocItems.push('架构总览');
-    if (sections.detailedAnalysis) tocItems.push('详细组件分析');
-    if (sections.dependencyAnalysis) tocItems.push('依赖分析');
-    if (sections.troubleshooting) tocItems.push('故障排查指南');
-    if (sections.conclusion) tocItems.push('结论');
-    if (sections.appendix) tocItems.push('附录');
+    if (sections.introduction) tocItems.push(S.introduction);
+    if (sections.projectStructure) tocItems.push(S.projectStructure);
+    if (sections.coreComponents) tocItems.push(S.coreComponents);
+    if (sections.architectureOverview) tocItems.push(S.architectureOverview);
+    if (sections.detailedAnalysis) tocItems.push(S.detailedAnalysis);
+    if (sections.dependencyAnalysis) tocItems.push(S.dependencyAnalysis);
+    if (sections.troubleshooting) tocItems.push(S.troubleshooting);
+    if (sections.conclusion) tocItems.push(S.conclusion);
+    if (sections.appendix) tocItems.push(S.appendix);
 
     // 3. 目录
     if (tocItems.length > 0) {
-        parts.push(formatToc(tocItems));
+        parts.push(formatToc(tocItems, labels));
         parts.push('');
     }
 
     // 4. 引言
     if (sections.introduction) {
-        parts.push('## 引言');
+        parts.push(`## ${S.introduction}`);
         parts.push('');
         parts.push(sections.introduction);
         parts.push('');
@@ -199,7 +220,7 @@ export function assembleWikiPage(sections: {
 
     // 5. 项目结构
     if (sections.projectStructure) {
-        parts.push('## 项目结构与关系');
+        parts.push(`## ${S.projectStructure}`);
         parts.push('');
         parts.push(sections.projectStructure);
         if (sections.projectStructureDiagram) {
@@ -211,7 +232,7 @@ export function assembleWikiPage(sections: {
 
     // 6. 核心组件
     if (sections.coreComponents) {
-        parts.push('## 核心组件总览');
+        parts.push(`## ${S.coreComponents}`);
         parts.push('');
         parts.push(sections.coreComponents);
         parts.push('');
@@ -219,7 +240,7 @@ export function assembleWikiPage(sections: {
 
     // 7. 架构总览
     if (sections.architectureOverview) {
-        parts.push('## 架构总览');
+        parts.push(`## ${S.architectureOverview}`);
         parts.push('');
         parts.push(sections.architectureOverview);
         if (sections.architectureDiagram) {
@@ -231,7 +252,7 @@ export function assembleWikiPage(sections: {
 
     // 8. 详细组件分析
     if (sections.detailedAnalysis) {
-        parts.push('## 详细组件分析');
+        parts.push(`## ${S.detailedAnalysis}`);
         parts.push('');
         parts.push(sections.detailedAnalysis);
         parts.push('');
@@ -239,7 +260,7 @@ export function assembleWikiPage(sections: {
 
     // 9. 依赖分析
     if (sections.dependencyAnalysis) {
-        parts.push('## 依赖分析');
+        parts.push(`## ${S.dependencyAnalysis}`);
         parts.push('');
         parts.push(sections.dependencyAnalysis);
         if (sections.dependencyDiagram) {
@@ -251,7 +272,7 @@ export function assembleWikiPage(sections: {
 
     // 10. 故障排查
     if (sections.troubleshooting) {
-        parts.push('## 故障排查指南');
+        parts.push(`## ${S.troubleshooting}`);
         parts.push('');
         parts.push(sections.troubleshooting);
         parts.push('');
@@ -259,7 +280,7 @@ export function assembleWikiPage(sections: {
 
     // 11. 结论
     if (sections.conclusion) {
-        parts.push('## 结论');
+        parts.push(`## ${S.conclusion}`);
         parts.push('');
         parts.push(sections.conclusion);
         parts.push('');
@@ -267,7 +288,7 @@ export function assembleWikiPage(sections: {
 
     // 12. 附录
     if (sections.appendix) {
-        parts.push('## 附录');
+        parts.push(`## ${S.appendix}`);
         parts.push('');
         parts.push(sections.appendix);
         parts.push('');

@@ -1,16 +1,23 @@
 import { type ModuleInfo, type ApiRoute, type DatabaseModel } from '../models/index.js';
+import { getLabels, type WikiLabels } from '../i18n/labels.js';
 
 /**
  * Mermaid 图表生成器
  * 将分析结果转换为 Mermaid 格式的架构图、ER 图和流程图
+ *
+ * 图表中的节点/分组标签通过 {@link WikiLabels} 注入，实现语言无关。
+ * 为向后兼容，`labels` 参数默认使用中文标签集。
  */
+
+const DEFAULT_LABELS = getLabels('zh');
 
 /**
  * 生成项目整体架构的 Mermaid flowchart
  */
 export function generateArchitectureDiagram(
     modules: ModuleInfo[],
-    dependencies: Array<Record<string, unknown>>
+    dependencies: Array<Record<string, unknown>>,
+    labels: WikiLabels = DEFAULT_LABELS,
 ): string {
     const lines: string[] = ['flowchart LR'];
 
@@ -19,7 +26,7 @@ export function generateArchitectureDiagram(
 
     for (const [category, mods] of Object.entries(groups)) {
         const subgraphId = sanitizeMermaidId(category);
-        lines.push(`    subgraph ${subgraphId}["${getCategoryLabel(category)}"]`);
+        lines.push(`    subgraph ${subgraphId}["${getCategoryLabel(category, labels)}"]`);
 
         for (const mod of mods) {
             const nodeId = sanitizeMermaidId(mod.moduleName);
@@ -92,12 +99,13 @@ export function generateERDiagram(models: DatabaseModel[]): string {
  */
 export function generateDependencyDiagram(
     modules: ModuleInfo[],
-    edges: Array<{ source: string; target: string; isExternal: boolean }>
+    edges: Array<{ source: string; target: string; isExternal: boolean }>,
+    labels: WikiLabels = DEFAULT_LABELS,
 ): string {
     const lines: string[] = ['flowchart TD'];
 
     // 内部模块节点
-    lines.push('    subgraph internal["内部模块"]');
+    lines.push(`    subgraph internal["${labels.diagram.internalModules}"]`);
     for (const mod of modules) {
         const nodeId = sanitizeMermaidId(mod.moduleName);
         lines.push(`        ${nodeId}["${mod.moduleName}"]`);
@@ -113,7 +121,7 @@ export function generateDependencyDiagram(
     }
 
     if (externalDeps.size > 0) {
-        lines.push('    subgraph external["外部依赖"]');
+        lines.push(`    subgraph external["${labels.diagram.externalDeps}"]`);
         for (const dep of externalDeps) {
             const nodeId = sanitizeMermaidId(`ext_${dep}`);
             lines.push(`        ${nodeId}["${dep}"]`);
@@ -150,7 +158,7 @@ export function generateDependencyDiagram(
 /**
  * 生成 API 路由的 Mermaid 图
  */
-export function generateApiDiagram(routes: ApiRoute[]): string {
+export function generateApiDiagram(routes: ApiRoute[], labels: WikiLabels = DEFAULT_LABELS): string {
     if (routes.length === 0) return '';
 
     const lines: string[] = ['flowchart LR'];
@@ -164,7 +172,7 @@ export function generateApiDiagram(routes: ApiRoute[]): string {
         groups.set(prefix, group);
     }
 
-    lines.push('    Client["客户端"] --> Router["路由层"]');
+    lines.push(`    Client["${labels.diagram.client}"] --> Router["${labels.diagram.router}"]`);
 
     for (const [prefix, groupRoutes] of groups) {
         const groupId = sanitizeMermaidId(`api_${prefix}`);
@@ -188,14 +196,16 @@ export function generateApiDiagram(routes: ApiRoute[]): string {
 export function generateTechStackDiagram(
     frameworks: string[],
     databases: string[],
-    services: string[]
+    services: string[],
+    labels: WikiLabels = DEFAULT_LABELS,
 ): string {
+    const D = labels.diagram;
     const lines: string[] = ['flowchart TB'];
 
-    lines.push('    User["用户"] --> Frontend');
+    lines.push(`    User["${D.user}"] --> Frontend`);
 
     if (frameworks.length > 0) {
-        lines.push('    subgraph Frontend["前端"]');
+        lines.push(`    subgraph Frontend["${D.frontend}"]`);
         for (const fw of frameworks.filter(f =>
             ['Next.js', 'React', 'Vue.js', 'Angular', 'Svelte'].includes(f)
         )) {
@@ -209,7 +219,7 @@ export function generateTechStackDiagram(
     );
     if (backendFrameworks.length > 0) {
         lines.push('    Frontend --> Backend');
-        lines.push('    subgraph Backend["后端"]');
+        lines.push(`    subgraph Backend["${D.backend}"]`);
         for (const fw of backendFrameworks) {
             lines.push(`        ${sanitizeMermaidId(fw)}["${fw}"]`);
         }
@@ -218,7 +228,7 @@ export function generateTechStackDiagram(
 
     if (databases.length > 0) {
         lines.push('    Backend --> Database');
-        lines.push('    subgraph Database["数据存储"]');
+        lines.push(`    subgraph Database["${D.database}"]`);
         for (const db of databases) {
             lines.push(`        ${sanitizeMermaidId(db)}["${db}"]`);
         }
@@ -227,7 +237,7 @@ export function generateTechStackDiagram(
 
     if (services.length > 0) {
         lines.push('    Backend --> Services');
-        lines.push('    subgraph Services["外部服务"]');
+        lines.push(`    subgraph Services["${D.services}"]`);
         for (const svc of services) {
             lines.push(`        ${sanitizeMermaidId(svc)}["${svc}"]`);
         }
@@ -301,20 +311,10 @@ function inferCategory(mod: ModuleInfo): string {
 }
 
 /**
- * 获取类别的中文标签
+ * 获取类别标签（按语言）
  */
-function getCategoryLabel(category: string): string {
-    const labels: Record<string, string> = {
-        frontend: '前端应用',
-        backend: '后端服务',
-        agents: 'Agent 系统',
-        data: '数据模型',
-        tests: '测试',
-        infrastructure: '基础设施',
-        shared: '公共模块',
-        other: '其他模块'
-    };
-    return labels[category] || category;
+function getCategoryLabel(category: string, labels: WikiLabels): string {
+    return labels.diagram.categories[category] || category;
 }
 
 /**

@@ -12,14 +12,27 @@ import {
     analyzeWorkflows,
 } from './analyzer/index.js';
 import { WikiGenerator, generateHome, generateSidebar } from './generator/index.js';
-import type { AnalysisResult, ProjectProfile, WikiPage } from './models/index.js';
+import { getLabels, normalizeLang, type WikiLang } from './i18n/labels.js';
+import { defaultWikiRoot, resolveWikiPaths } from './output/layout.js';
+import { mapWithConcurrency } from './util/concurrency.js';
+import { computeSourceIndex, buildMetadata, writeMetadata, readMetadata } from './metadata/index.js';
+import { runIncrementalUpdate } from './incremental/index.js';
+import { getGitCommit } from './util/git.js';
+import type { AnalysisResult, ProjectProfile, WikiPage, CatalogNode, CatalogStrategy } from './models/index.js';
 
 export interface PipelineOptions {
     workspacePath: string;
+    /** 输出根目录（默认 <workspace>/.repowiki）。语言树位于 <root>/<lang> */
     outputDir?: string;
     modelName?: string;
     concurrency?: number;
     skipLlm?: boolean;
+    /** 文档语言（默认 en）。'both' 由 CLI 逐语言多次调用实现 */
+    lang?: WikiLang;
+    /** 目录组织策略 */
+    strategy?: CatalogStrategy;
+    /** 强制全量重建（忽略已有元数据的增量分支） */
+    forceRebuild?: boolean;
     onProgress?: (event: PipelineEvent) => void;
 }
 
@@ -34,12 +47,22 @@ export type PipelineEvent =
 export async function runPipeline(options: PipelineOptions): Promise<AnalysisResult> {
     const {
         workspacePath,
-        outputDir = path.join(workspacePath, 'docs', 'wiki'),
+        outputDir,
         modelName,
         concurrency = 3,
         skipLlm = false,
+        lang = 'en',
+        strategy = 'feature',
+        forceRebuild = false,
         onProgress,
     } = options;
+
+    // 解析语言与输出布局：<root>/<lang>/{content,meta}
+    const wikiLang = normalizeLang(lang);
+    const labels = getLabels(wikiLang);
+    const root = outputDir ?? defaultWikiRoot(workspacePath);
+    const paths = resolveWikiPaths(root, wikiLang);
+    const contentDir = paths.contentDir;
 
     const emitProgress = (stage: string, progress: number, message: string) => {
         if (onProgress) {
@@ -77,7 +100,11 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         }
 
         // 确保输出目录存在
-        await fs.mkdir(outputDir, { recursive: true });
+        await fs.mkdir(contentDir, { recursive: true });
+
+        // 提前读取已有元数据：决定是否走增量分支（增量时可跳过昂贵的 LLM 模块分析）
+        const existingMetadata = forceRebuild ? null : await readMetadata(paths.metadataFile);
+        const incrementalMode = existingMetadata !== null;
 
         // ====================================================================
         // 2. Scan Phase 阶段
@@ -113,7 +140,13 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         const dependencyGraph = await buildDependencyGraph(workspacePath, files);
 
         emitProgress('Analysis', 50, '对模块结构聚类分析...');
-        const modules = await analyzeModules(workspacePath, files, llmClient);
+        // 增量模式下跳过 LLM 模块摘要（页面重生成直接基于 dependent_files）
+        const modules = await analyzeModules(
+            workspacePath,
+            files,
+            incrementalMode ? null : llmClient,
+            concurrency,
+        );
 
         emitProgress('Analysis', 60, '提取 API 路由及数据库模型定义...');
         const apiRoutes = await analyzeApiRoutes(workspacePath, files);
@@ -133,47 +166,103 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             wikiPages: [],
         };
 
+        // 相对路径 → 行数 映射，供引用校验使用行号上界（两条路径共用）
+        const fileMeta = new Map<string, number>();
+        for (const f of files) {
+            if (f.nodeType === 'file') {
+                fileMeta.set(f.relativePath.replace(/\\/g, '/'), f.lineCount ?? 0);
+            }
+        }
+
+        // ====================================================================
+        // 3.5 增量更新分支（Phase 0）：已有元数据且未强制重建时，只重生成受影响页
+        // ====================================================================
+        if (incrementalMode && existingMetadata) {
+            {
+                emitProgress('Incremental', 72, '检测到已有元数据，计算变更集...');
+                const result = await runIncrementalUpdate({
+                    workspacePath,
+                    contentDir,
+                    metadataFile: paths.metadataFile,
+                    metadata: existingMetadata,
+                    analysisResult,
+                    llmClient,
+                    labels,
+                    fileMeta,
+                    concurrency,
+                });
+
+                const msg = result.upToDate
+                    ? `Wiki (${wikiLang}) 已是最新：${result.untouched} 页无源码变更（${result.method}）。未做改动。`
+                    : `增量更新完成（${result.method}）：变更文件 ${result.changedFiles}，重生成 ${result.regenerated.length} 页，删除 ${result.orphaned.length} 页，保留 ${result.untouched} 页。`;
+                emitProgress('Incremental', 100, msg);
+
+                const doneEvent = {
+                    type: 'DONE' as const,
+                    payload: {
+                        docsPath: path.resolve(paths.langRoot),
+                        pagesCount: result.regenerated.length,
+                    },
+                };
+                if (onProgress) onProgress(doneEvent);
+                else console.log(JSON.stringify(doneEvent));
+
+                return analysisResult;
+            }
+        }
+
         // ====================================================================
         // 4. Planning Phase 阶段
         // ====================================================================
         emitProgress('Planning', 70, '制定 Wiki 页面规划方案...');
-        const generator = new WikiGenerator(llmClient, { outputDir, concurrency });
-        const plannedPages = await generator.planPages(analysisResult);
+        const generator = new WikiGenerator(llmClient, {
+            outputDir: contentDir,
+            concurrency,
+            labels,
+            fileMeta,
+        });
+        const catalog: CatalogNode[] = await generator.planCatalog(analysisResult, strategy);
 
-        emitProgress('Planning', 75, `规划完成，共需要生成 ${plannedPages.length} 个 Wiki 页面。`);
+        emitProgress('Planning', 75, `规划完成，共需要生成 ${catalog.length} 个 Wiki 页面。`);
 
         // ====================================================================
         // 5. Render Phase 阶段
         // ====================================================================
+        // 交叉引用索引：并发生成时以完整目录树为准
+        const plannedSummary = catalog
+            .map((n) => `- ${n.title} (${n.filename})`)
+            .join('\n');
+
+        let completed = 0;
+        const progressBase = 75;
+        const progressSpan = 95 - progressBase;
+
+        // 按层级 parent-first 生成，层内受 concurrency 限制并发
         const generatedPages: WikiPage[] = [];
+        const maxLayer = catalog.reduce((mx, n) => Math.max(mx, n.layerLevel), 0);
+        for (let layer = 0; layer <= maxLayer; layer++) {
+            const levelNodes = catalog.filter((n) => n.layerLevel === layer);
+            if (levelNodes.length === 0) continue;
 
-        // 构建快速交叉引用索引
-        const getExistingPagesSummary = () => {
-            return generatedPages.map((p) => `- ${p.title} (${p.filename})`).join('\n');
-        };
+            const pages = await mapWithConcurrency(levelNodes, concurrency, async (node) => {
+                const wikiPage = await generator.generateNode(
+                    workspacePath,
+                    node,
+                    analysisResult,
+                    catalog,
+                    plannedSummary,
+                );
+                await generator.savePage(wikiPage);
 
-        let currentProgress = 75;
-        const progressStep = (95 - 75) / Math.max(plannedPages.length, 1);
-
-        for (let i = 0; i < plannedPages.length; i++) {
-            const page = plannedPages[i];
-            currentProgress += progressStep;
-
-            emitProgress(
-                'LLM Inference',
-                Math.round(currentProgress),
-                `正在生成 (${i + 1}/${plannedPages.length}): ${page.title}...`
-            );
-
-            const wikiPage = await generator.generatePage(
-                workspacePath,
-                page,
-                analysisResult,
-                getExistingPagesSummary()
-            );
-
-            await generator.savePage(wikiPage);
-            generatedPages.push(wikiPage);
+                completed += 1;
+                emitProgress(
+                    'LLM Inference',
+                    Math.round(progressBase + (progressSpan * completed) / Math.max(catalog.length, 1)),
+                    `已生成 (${completed}/${catalog.length}): ${node.title}`,
+                );
+                return wikiPage;
+            });
+            generatedPages.push(...pages);
         }
 
         // ====================================================================
@@ -181,11 +270,28 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         // ====================================================================
         emitProgress('Post-flight', 96, '生成 Wiki 导航与侧边栏 _Sidebar.md...');
 
-        const sidebarContent = generateSidebar(generatedPages);
-        const homeContent = generateHome(generatedPages, projectProfile);
+        const sidebarContent = generateSidebar(generatedPages, labels);
+        const homeContent = generateHome(generatedPages, projectProfile, labels);
 
-        await fs.writeFile(path.join(outputDir, '_Sidebar.md'), sidebarContent, 'utf-8');
-        await fs.writeFile(path.join(outputDir, 'Home.md'), homeContent, 'utf-8');
+        await fs.writeFile(path.join(contentDir, '_Sidebar.md'), sidebarContent, 'utf-8');
+        await fs.writeFile(path.join(contentDir, 'Home.md'), homeContent, 'utf-8');
+
+        // 生成机器可读元数据（source_index 指纹 + 目录树），驱动后续增量更新
+        emitProgress('Post-flight', 98, '生成元数据 repowiki-metadata.json...');
+        const sourceIndex = await computeSourceIndex(workspacePath, catalog);
+        const gitCommit = await getGitCommit(workspacePath);
+        const metadata = buildMetadata({
+            projectProfile,
+            tree: treeStr,
+            lang: wikiLang,
+            catalog,
+            pages: generatedPages,
+            sourceIndex,
+            gitCommit,
+            timestamp: new Date().toISOString(),
+            readmeContent: homeContent,
+        });
+        await writeMetadata(paths.metadataFile, metadata);
 
         // 将新页追加到分析结果中
         analysisResult.wikiPages = generatedPages;
@@ -195,7 +301,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         const doneEvent = {
             type: 'DONE' as const,
             payload: {
-                docsPath: path.resolve(outputDir),
+                docsPath: path.resolve(paths.langRoot),
                 pagesCount: generatedPages.length + 2, // 包含 Home.md, _Sidebar.md
             },
         };

@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import type { FileNode, ModuleInfo, CoreComponent } from '../models/index.js';
 import type { LLMClient } from '../llm/index.js';
 import { buildModuleAnalysisPrompt } from '../llm/index.js';
+import { mapWithConcurrency } from '../util/concurrency.js';
 
 // ============================================================================
 // 目录 → 分类标签映射
@@ -16,7 +17,7 @@ import { buildModuleAnalysisPrompt } from '../llm/index.js';
 const CATEGORY_RULES: Array<{ keywords: string[]; category: string }> = [
     { keywords: ['agent'], category: 'agents' },
     { keywords: ['model', 'entity', 'schema'], category: 'models' },
-    { keywords: ['route', 'router', 'controller', 'endpoint'], category: 'api' },
+    { keywords: ['route', 'router', 'controller', 'endpoint', 'api'], category: 'api' },
     { keywords: ['test', '__tests__', 'spec'], category: 'tests' },
     { keywords: ['component', 'components'], category: 'components' },
     { keywords: ['view', 'views', 'page', 'pages'], category: 'views' },
@@ -221,6 +222,7 @@ export async function analyzeModules(
     rootPath: string,
     files: FileNode[],
     llmClient?: LLMClient | null,
+    concurrency = 3,
 ): Promise<ModuleInfo[]> {
     // ------------------------------------------------------------------
     // 第一步：按目录分组
@@ -262,8 +264,8 @@ export async function analyzeModules(
     // 第三步：生成描述（LLM 或回退）
     // ------------------------------------------------------------------
     if (llmClient) {
-        // 使用 LLM 逐模块生成描述，串行调用以避免速率限制
-        for (const mod of modules) {
+        // 使用 LLM 逐模块生成描述；受 concurrency 限制并发调用
+        await mapWithConcurrency(modules, concurrency, async (mod) => {
             try {
                 const prompt = buildModuleAnalysisPrompt(mod.directory, mod.files.join('\n'), '');
                 const result = await llmClient.chatJSON<ModuleAnalysisResponse>(prompt);
@@ -287,7 +289,7 @@ export async function analyzeModules(
                 );
                 mod.coreComponents = inferCoreComponents(mod.files);
             }
-        }
+        });
     } else {
         // 无 LLM，使用基于结构的启发式描述
         for (const mod of modules) {

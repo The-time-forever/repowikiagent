@@ -36,6 +36,14 @@ export {
 } from './wiki-page.js';
 
 export {
+    DiagramKindSchema,
+    type DiagramKind,
+    type CatalogStrategy,
+    CatalogNodeSchema,
+    type CatalogNode,
+} from './catalog.js';
+
+export {
     DependencyEdgeSchema,
     DependencyGraphSchema,
     AnalysisResultSchema,
