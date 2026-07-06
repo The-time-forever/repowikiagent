@@ -171,6 +171,16 @@ export async function saveGlobalConfig(config: Partial<LLMConfig>): Promise<void
     if (config.apiKey !== undefined) merged['apiKey'] = config.apiKey;
 
     await fs.writeFile(configPath, JSON.stringify(merged, null, 2), 'utf-8');
+
+    // 配置文件含明文 API key，POSIX 上收紧为仅属主可读写（Windows 无此语义，忽略）
+    if (process.platform !== 'win32') {
+        try {
+            await fs.chmod(configDir, 0o700);
+            await fs.chmod(configPath, 0o600);
+        } catch {
+            // 权限收紧失败不阻塞保存
+        }
+    }
 }
 
 /**

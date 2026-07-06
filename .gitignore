@@ -6,7 +6,6 @@ dist/
 *.tsbuildinfo
 
 # VS Code Extension
-packages/vscode-extension/
 *.vsix
 .vscode-test/
 

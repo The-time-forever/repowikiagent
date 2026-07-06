@@ -38,6 +38,7 @@ export interface PipelineOptions {
 
 export type PipelineEvent =
     | { type: 'PROGRESS'; stage: string; progress: number; message: string }
+    | { type: 'WARN'; stage: string; message: string }
     | { type: 'DONE'; payload: { docsPath: string; pagesCount: number } }
     | { type: 'ERROR'; code: number; message: string };
 
@@ -70,6 +71,14 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         } else {
             // CLI 后台或未提供回调时输出规范的 JSONL 格式进程通知
             console.log(JSON.stringify({ type: 'PROGRESS', stage, progress, message }));
+        }
+    };
+
+    const emitWarn = (stage: string, message: string) => {
+        if (onProgress) {
+            onProgress({ type: 'WARN', stage, message });
+        } else {
+            console.log(JSON.stringify({ type: 'WARN', stage, message }));
         }
     };
 
@@ -190,11 +199,23 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
                     labels,
                     fileMeta,
                     concurrency,
+                    onWarn: (message) => emitWarn('Incremental', message),
                 });
 
+                if (result.addedUnassigned.length > 0) {
+                    emitWarn(
+                        'Incremental',
+                        `${result.addedUnassigned.length} 个新增文件未被任何页面覆盖（如 ${result.addedUnassigned
+                            .slice(0, 3)
+                            .join(', ')}），建议使用 --force-rebuild 重新规划目录。`,
+                    );
+                }
+
+                const assignedNote =
+                    result.addedAssigned > 0 ? `，${result.addedAssigned} 个新增文件已归入相关页` : '';
                 const msg = result.upToDate
                     ? `Wiki (${wikiLang}) 已是最新：${result.untouched} 页无源码变更（${result.method}）。未做改动。`
-                    : `增量更新完成（${result.method}）：变更文件 ${result.changedFiles}，重生成 ${result.regenerated.length} 页，删除 ${result.orphaned.length} 页，保留 ${result.untouched} 页。`;
+                    : `增量更新完成（${result.method}）：变更文件 ${result.changedFiles}，重生成 ${result.regenerated.length} 页，删除 ${result.orphaned.length} 页，保留 ${result.untouched} 页${assignedNote}。`;
                 emitProgress('Incremental', 100, msg);
 
                 const doneEvent = {
@@ -220,6 +241,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             concurrency,
             labels,
             fileMeta,
+            onWarn: (message) => emitWarn('LLM Inference', message),
         });
         const catalog: CatalogNode[] = await generator.planCatalog(analysisResult, strategy);
 

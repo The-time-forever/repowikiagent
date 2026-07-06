@@ -27,9 +27,29 @@ export const generateCommand = new Command('generate')
         const strategy = options.strategy === 'package' ? 'package' : 'feature';
 
         let spinner: ReturnType<typeof ora> | null = null;
+        let currentStage = '';
+        let lastMessage = '';
+        let warnCount = 0;
+        const startedAt = Date.now();
+
+        /** 阶段收尾：把该阶段最后一条消息固化成一行留在终端 */
+        const persistStage = () => {
+            if (!spinner || !currentStage) return;
+            spinner.stopAndPersist({
+                symbol: chalk.green('+'),
+                text: chalk.dim(`[${currentStage}] `) + lastMessage,
+            });
+        };
+
+        const formatElapsed = () => {
+            const seconds = (Date.now() - startedAt) / 1000;
+            return seconds >= 60
+                ? `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+                : `${seconds.toFixed(1)}s`;
+        };
 
         if (!jsonStdout) {
-            console.log(chalk.bold.cyan('\n🚀 开始运行 RepoWiki 文档生成引擎...\n'));
+            console.log(chalk.bold('\nRepoWiki 文档生成\n'));
             spinner = ora('初始化环境中...').start();
         }
 
@@ -43,30 +63,47 @@ export const generateCommand = new Command('generate')
             if (!spinner) return;
 
             if (event.type === 'PROGRESS') {
-                spinner.text = chalk.dim(`[${event.stage}] `) + event.message;
-                // 根据阶段定制颜色或特定显示
-                if (event.stage === 'Scanning') {
-                    spinner.color = 'blue';
-                } else if (event.stage === 'Analysis') {
-                    spinner.color = 'magenta';
-                } else if (event.stage === 'LLM Inference') {
-                    spinner.color = 'yellow';
-                } else {
-                    spinner.color = 'cyan';
+                const text = chalk.dim(`[${event.stage}] `) + event.message;
+                // 阶段切换时留痕上一阶段，终端保留完整阶段日志
+                if (event.stage !== currentStage) {
+                    persistStage();
+                    currentStage = event.stage;
+                    spinner.text = text;
+                    spinner.start();
                 }
+                lastMessage = event.message;
+                spinner.text = text;
+            } else if (event.type === 'WARN') {
+                warnCount += 1;
+                spinner.clear();
+                console.log(chalk.yellow('warn: ') + chalk.dim(`[${event.stage}] `) + event.message);
+                spinner.start();
             } else if (event.type === 'DONE') {
-                spinner.succeed(chalk.green('文档生成完成！'));
-                console.log('\n' + chalk.bold.green('✨ 生成结果详情:'));
-                console.log(chalk.gray('  - 输出目录: ') + chalk.underline.cyan(event.payload.docsPath));
-                console.log(chalk.gray('  - 生成文件数: ') + chalk.bold(event.payload.pagesCount) + ' 个\n');
+                persistStage();
+                currentStage = '';
+                spinner.succeed('生成完成');
+                console.log('');
+                console.log(`  输出目录  ${chalk.cyan(event.payload.docsPath)}`);
+                console.log(`  页面数    ${event.payload.pagesCount}`);
+                console.log(`  耗时      ${formatElapsed()}`);
+                if (warnCount > 0) {
+                    console.log(`  警告      ${chalk.yellow(warnCount)} 条（见上方 warn 行）`);
+                }
+                console.log('');
             } else if (event.type === 'ERROR') {
-                spinner.fail(chalk.red('文档生成失败！'));
-                console.error('\n' + chalk.red(`❌ [错误码 ${event.code}] `) + event.message + '\n');
+                spinner.fail('生成失败');
+                console.error('\n' + chalk.red('错误: ') + `[${event.code}] ` + event.message + '\n');
             }
         };
 
         try {
             for (const lang of languages) {
+                if (!jsonStdout && languages.length > 1) {
+                    if (spinner?.isSpinning) spinner.stop();
+                    console.log(chalk.bold(`语言: ${lang}`));
+                    currentStage = '';
+                    spinner?.start();
+                }
                 await runPipeline({
                     workspacePath,
                     outputDir,
@@ -80,10 +117,7 @@ export const generateCommand = new Command('generate')
                 });
             }
         } catch (err: any) {
-            if (jsonStdout) {
-                // runPipeline 内部已经输出了 ERROR 事件，这里捕获只作为最终异常退出
-                process.exit(1);
-            }
+            // runPipeline 内部已经输出了 ERROR 事件，这里捕获只作为最终异常退出
             process.exit(1);
         }
     });

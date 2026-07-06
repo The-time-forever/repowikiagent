@@ -52,10 +52,11 @@ function detectLanguage(filePath: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * 统计文件中非空行数。
+ * 统计文件的物理行数（含空行）。
+ * 该值被 citation-validator 用作引用行号上界，必须与编辑器行号一致。
  * 对大于 2 MB 的文件跳过行数统计以避免内存压力。
  */
-async function countNonEmptyLines(
+async function countLines(
     filePath: string,
     sizeBytes: number,
 ): Promise<number | undefined> {
@@ -67,7 +68,7 @@ async function countNonEmptyLines(
 
     try {
         const content = await readFile(filePath, 'utf-8');
-        return content.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
+        return content.split(/\r?\n/).length;
     } catch {
         // 二进制文件或无法读取 —— 静默跳过
         return undefined;
@@ -172,7 +173,7 @@ export async function scanDirectory(
         const sizeBytes = fileStat.size;
         const language = detectLanguage(absPath);
         const lineCount = language
-            ? await countNonEmptyLines(absPath, sizeBytes)
+            ? await countLines(absPath, sizeBytes)
             : undefined;
 
         nodes.push({

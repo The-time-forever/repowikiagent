@@ -1,8 +1,20 @@
 {
   "name": "repowiki-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "RepoWiki 命令行工具",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-time-forever/repowikiagent.git",
+    "directory": "packages/cli"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "dist/index.js",
   "bin": {
     "repowiki": "dist/index.js"

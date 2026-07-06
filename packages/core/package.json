@@ -1,8 +1,20 @@
 {
   "name": "repowiki-core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "RepoWiki 核心分析引擎",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-time-forever/repowikiagent.git",
+    "directory": "packages/core"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

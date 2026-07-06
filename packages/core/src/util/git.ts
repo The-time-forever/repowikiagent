@@ -47,10 +47,11 @@ export async function gitDiffNameStatus(cwd: string, fromSha: string): Promise<G
 }
 
 /**
- * `git status --porcelain` 解析为 GitChange[]（含未提交改动）；失败返回 null。
+ * `git status --porcelain -uall` 解析为 GitChange[]（含未提交改动）；失败返回 null。
+ * -uall 展开未跟踪目录内的具体文件（默认会折叠成 `dir/`，导致新增文件漏报）。
  */
 export async function gitStatusPorcelain(cwd: string): Promise<GitChange[] | null> {
-    const out = await runGit(cwd, ['status', '--porcelain']);
+    const out = await runGit(cwd, ['status', '--porcelain', '-uall']);
     if (out === null) return null;
     const changes: GitChange[] = [];
     for (const line of out.split('\n')) {

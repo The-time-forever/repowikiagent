@@ -35,6 +35,10 @@ export interface IncrementalResult {
     changedFiles: number;
     untouched: number;
     method: 'git' | 'hash';
+    /** 目录亲和归入已有页面的新增文件数 */
+    addedAssigned: number;
+    /** 未能归入任何页面的新增文件（相对路径） */
+    addedUnassigned: string[];
 }
 
 export interface IncrementalDeps {
@@ -47,6 +51,8 @@ export interface IncrementalDeps {
     labels: WikiLabels;
     fileMeta: Map<string, number>;
     concurrency: number;
+    /** 非致命问题上报通道（缺省静默） */
+    onWarn?: (message: string) => void;
 }
 
 const norm = (p: string) => p.replace(/\\/g, '/');
@@ -131,6 +137,53 @@ export function findStale(
     return { stale, orphaned };
 }
 
+/** 新增文件归页结果 */
+export interface AddedAssignment {
+    /** 页 id → 追加进该页 dependentFiles 的新增文件 */
+    assignedByNode: Map<string, string[]>;
+    /** 未命中任何页面的新增文件 */
+    unassigned: string[];
+}
+
+/**
+ * 目录亲和归页：新增文件的目录精确命中某页 dependentFiles 的目录集时，
+ * 归入该页（命中多页则都归入）。分区页（isSection）与无依赖页不参与。
+ *
+ * @param catalog    - 元数据重建的目录树
+ * @param addedFiles - 过滤后的新增文件（应先与本次扫描文件集取交集）
+ */
+export function assignAddedFiles(catalog: CatalogNode[], addedFiles: Iterable<string>): AddedAssignment {
+    // 页 id → 依赖目录集
+    const dirsByNode = new Map<string, Set<string>>();
+    for (const n of catalog) {
+        if (n.isSection || n.dependentFiles.length === 0) continue;
+        dirsByNode.set(
+            n.id,
+            new Set(n.dependentFiles.map((f) => path.posix.dirname(norm(f)))),
+        );
+    }
+
+    const assignedByNode = new Map<string, string[]>();
+    const unassigned: string[] = [];
+
+    for (const raw of addedFiles) {
+        const file = norm(raw);
+        const dir = path.posix.dirname(file);
+        let hit = false;
+        for (const [nodeId, dirs] of dirsByNode) {
+            if (dirs.has(dir)) {
+                hit = true;
+                const list = assignedByNode.get(nodeId) ?? [];
+                list.push(file);
+                assignedByNode.set(nodeId, list);
+            }
+        }
+        if (!hit) unassigned.push(file);
+    }
+
+    return { assignedByNode, unassigned };
+}
+
 /**
  * 执行增量更新。返回结果；upToDate=true 时不做任何写入。
  */
@@ -143,8 +196,33 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
     const catalog = metadata.wiki_catalogs.map(entryToCatalogNode);
     const { stale, orphaned } = findStale(catalog, changes);
 
+    // 新增文件目录亲和归页：仅考虑通过本次扫描（ignore 规则）的文件，
+    // 排除 wiki 自身输出等无关路径
+    const addedInScan = [...changes.added].filter((f) => deps.fileMeta.has(norm(f)));
+    const { assignedByNode, unassigned: addedUnassigned } = assignAddedFiles(catalog, addedInScan);
+
+    // 归页的新增文件追加进对应页的 dependentFiles，并把该页并入 stale
+    const orphanedIds = new Set(orphaned.map((n) => n.id));
+    const staleById = new Map(stale.map((n) => [n.id, n]));
+    let addedAssigned = 0;
+    for (const [nodeId, files] of assignedByNode) {
+        if (orphanedIds.has(nodeId)) continue;
+        const node = catalog.find((n) => n.id === nodeId);
+        if (!node) continue;
+        const existing = new Set(node.dependentFiles.map(norm));
+        for (const f of files) {
+            if (!existing.has(f)) {
+                node.dependentFiles.push(f);
+                existing.add(f);
+                addedAssigned += 1;
+            }
+        }
+        staleById.set(node.id, node);
+    }
+    const staleAll = [...staleById.values()];
+
     // 无 stale、无 orphaned → 原样停手
-    if (stale.length === 0 && orphaned.length === 0) {
+    if (staleAll.length === 0 && orphaned.length === 0) {
         return {
             upToDate: true,
             regenerated: [],
@@ -152,6 +230,8 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
             changedFiles,
             untouched: catalog.length,
             method: changes.method,
+            addedAssigned: 0,
+            addedUnassigned,
         };
     }
 
@@ -160,13 +240,14 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         concurrency: deps.concurrency,
         labels: deps.labels,
         fileMeta: deps.fileMeta,
+        onWarn: deps.onWarn,
     });
 
     const plannedSummary = catalog.map((n) => `- ${n.title} (${n.filename})`).join('\n');
     const now = new Date().toISOString();
 
     // 1) 重生成 stale 页
-    await mapWithConcurrency(stale, deps.concurrency, async (node) => {
+    await mapWithConcurrency(staleAll, deps.concurrency, async (node) => {
         const page = await generator.generateNode(
             workspacePath,
             node,
@@ -183,11 +264,20 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         await fs.rm(path.join(contentDir, node.filename), { force: true });
     }
 
-    // 3) 更新元数据：stale 条目刷新 gmt_modified；orphaned 摘除；刷新受影响文件指纹
-    const staleIds = new Set(stale.map((n) => n.id));
+    // 3) 更新元数据：stale 条目刷新 gmt_modified 与 dependent_files（含归页新增文件）；
+    //    orphaned 摘除；刷新受影响文件指纹
+    const staleIds = new Set(staleAll.map((n) => n.id));
     metadata.wiki_catalogs = metadata.wiki_catalogs
         .filter((c) => !orphanIds.has(c.id))
-        .map((c) => (staleIds.has(c.id) ? { ...c, gmt_modified: now } : c));
+        .map((c) =>
+            staleIds.has(c.id)
+                ? {
+                      ...c,
+                      gmt_modified: now,
+                      dependent_files: (staleById.get(c.id)?.dependentFiles ?? []).join(','),
+                  }
+                : c,
+        );
     metadata.wiki_items = metadata.wiki_items.filter((it) => !orphanIds.has(it.catalog_id));
     metadata.knowledge_relations = metadata.knowledge_relations.filter(
         (r) => !orphanIds.has(r.source_id) && !orphanIds.has(r.target_id),
@@ -195,7 +285,7 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
 
     // 刷新 stale 页依赖文件的指纹；移除已删除文件的指纹
     const refreshFiles = new Set<string>();
-    for (const node of stale) node.dependentFiles.forEach((f) => refreshFiles.add(norm(f)));
+    for (const node of staleAll) node.dependentFiles.forEach((f) => refreshFiles.add(norm(f)));
     for (const rel of refreshFiles) {
         const fp = await fingerprintFile(workspacePath, rel);
         if (fp) metadata.source_index[rel] = fp;
@@ -212,10 +302,12 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
 
     return {
         upToDate: false,
-        regenerated: stale.map((n) => n.title),
+        regenerated: staleAll.map((n) => n.title),
         orphaned: orphaned.map((n) => n.title),
         changedFiles,
-        untouched: catalog.length - stale.length - orphaned.length,
+        untouched: catalog.length - staleAll.length - orphaned.length,
         method: changes.method,
+        addedAssigned,
+        addedUnassigned,
     };
 }

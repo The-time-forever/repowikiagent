@@ -15,8 +15,8 @@ export const FileNodeSchema = z.object({
     sizeBytes: z.number().describe('文件大小'),
     /** 检测到的编程语言 */
     language: z.string().optional().describe('语言类型'),
-    /** 非空代码行数 */
-    lineCount: z.number().optional().describe('非空代码行数'),
+    /** 物理行数（含空行，与编辑器行号一致） */
+    lineCount: z.number().optional().describe('物理行数'),
 });
 
 /** 文件节点类型 */

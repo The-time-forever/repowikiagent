@@ -1,6 +1,6 @@
 {
   "name": "repowiki-local-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "面向开发者的本地化代码知识库生成 Agent",
   "scripts": {

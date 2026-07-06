@@ -1,0 +1,105 @@
+{
+  "name": "repowiki-vscode",
+  "displayName": "RepoWiki",
+  "description": "本地化代码库 Wiki 生成与源码追溯：目录树导航、引用行跳转、增量更新",
+  "version": "0.3.0",
+  "publisher": "repowiki",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-time-forever/repowikiagent.git",
+    "directory": "packages/vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Documentation",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "dependencies": {
+    "repowiki-core": "workspace:*"
+  },
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "repowiki.generateWiki",
+        "title": "RepoWiki: Generate Project Wiki",
+        "category": "RepoWiki"
+      },
+      {
+        "command": "repowiki.openWiki",
+        "title": "RepoWiki: Open Wiki Preview",
+        "category": "RepoWiki"
+      },
+      {
+        "command": "repowiki.configureModel",
+        "title": "RepoWiki: Configure Model Provider",
+        "category": "RepoWiki"
+      },
+      {
+        "command": "repowiki.refreshSidebar",
+        "title": "RepoWiki: Refresh Wiki Tree",
+        "category": "RepoWiki",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "repowiki.openCitation",
+        "title": "RepoWiki: Open Citation",
+        "category": "RepoWiki"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "repowiki-sidebar",
+          "title": "RepoWiki",
+          "icon": "$(book)"
+        }
+      ]
+    },
+    "views": {
+      "repowiki-sidebar": [
+        {
+          "id": "repowiki.wikiTree",
+          "name": "Wiki Catalog"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "repowiki.wikiTree",
+        "contents": "当前项目还没有生成 Wiki。\n[生成 Wiki](command:repowiki.generateWiki)\n[配置模型](command:repowiki.configureModel)\nRepoWiki 在本地扫描分析代码；使用大模型时会上传项目结构、模块摘要与被引用的源码片段。"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "repowiki.refreshSidebar",
+          "when": "view == repowiki.wikiTree",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run build",
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "dev": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "rimraf": "^5.0.0",
+    "esbuild": "^0.23.0",
+    "@vscode/vsce": "^3.0.0",
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^20.0.0"
+  }
+}

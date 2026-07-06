@@ -7,8 +7,10 @@ export {
     runIncrementalUpdate,
     computeChangeSets,
     findStale,
+    assignAddedFiles,
     entryToCatalogNode,
     type ChangeSets,
     type IncrementalResult,
     type IncrementalDeps,
+    type AddedAssignment,
 } from './updater.js';

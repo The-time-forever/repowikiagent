@@ -61,7 +61,7 @@ export const scanCommand = new Command('scan')
 
             console.log(jsonOutput);
         } catch (err: any) {
-            console.error(chalk.red('❌ 扫描失败:'), err?.message || err);
+            console.error(chalk.red('错误: 扫描失败:'), err?.message || err);
             process.exit(1);
         }
     });

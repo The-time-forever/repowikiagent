@@ -8,7 +8,7 @@ import type {
     DiagramKind,
 } from '../models/index.js';
 import type { LLMClient } from '../llm/index.js';
-import { buildWikiPlanPrompt, buildWikiPagePrompt } from '../llm/index.js';
+import { buildWikiPlanPrompt, buildWikiPagePrompt, LLMAuthError } from '../llm/index.js';
 import { getLabels, type WikiLabels } from '../i18n/labels.js';
 import { collectGroundedSources, renderGroundedSources } from '../grounding/source-provider.js';
 import { validateCitations, formatCitationErrors } from '../grounding/citation-validator.js';
@@ -33,21 +33,25 @@ export interface WikiGeneratorConfig {
     labels?: WikiLabels;
     /** 扫描得到的 相对路径→行数 映射，用于引用校验（缺省则不做行号上界检查） */
     fileMeta?: Map<string, number>;
+    /** LLM 降级/引用校验未通过等非致命问题的上报通道（缺省静默） */
+    onWarn?: (message: string) => void;
 }
 
 /**
  * 核心 Wiki 生成器（catalog 树驱动）
  */
 export class WikiGenerator {
-    private config: Required<WikiGeneratorConfig>;
+    private config: Required<Omit<WikiGeneratorConfig, 'onWarn'>>;
     private llmClient: LLMClient | null;
     private labels: WikiLabels;
     private fileMeta: Map<string, number>;
+    private onWarn: (message: string) => void;
 
     constructor(llmClient: LLMClient | null, config: WikiGeneratorConfig) {
         this.llmClient = llmClient;
         this.labels = config.labels ?? getLabels('zh');
         this.fileMeta = config.fileMeta ?? new Map();
+        this.onWarn = config.onWarn ?? (() => {});
         this.config = {
             outputDir: config.outputDir,
             concurrency: config.concurrency ?? 3,
@@ -102,8 +106,15 @@ export class WikiGenerator {
                     return flat;
                 }
             }
-        } catch {
-            // 回退到确定性建树
+            this.onWarn('LLM 目录规划结果无效，已回退确定性建树。');
+        } catch (err) {
+            // 认证错误没有重试价值，直接上抛终止整次生成（避免坏 key 产出整套降级页）
+            if (err instanceof LLMAuthError) {
+                throw err;
+            }
+            this.onWarn(
+                `LLM 目录规划失败，已回退确定性建树: ${err instanceof Error ? err.message : String(err)}`,
+            );
         }
 
         return fallback();
@@ -144,13 +155,17 @@ export class WikiGenerator {
                     this.labels.lang,
                 );
 
-                const { content, value: citations } = await this.llmClient.chatWithValidation(
+                const { content, value: citations, ok } = await this.llmClient.chatWithValidation(
                     prompt,
                     (c) => {
                         const r = validateCitations(c, this.fileMeta);
                         return { ok: r.ok, value: r.citations, error: formatCitationErrors(r.errors) };
                     },
                 );
+
+                if (!ok) {
+                    this.onWarn(`页面「${node.title}」引用校验未完全通过，已保留尽力结果。`);
+                }
 
                 return {
                     title: node.title,
@@ -159,8 +174,13 @@ export class WikiGenerator {
                     content,
                     sourceRefs: citations,
                 };
-            } catch {
-                // 回退到模板组装
+            } catch (err) {
+                if (err instanceof LLMAuthError) {
+                    throw err;
+                }
+                this.onWarn(
+                    `页面「${node.title}」LLM 生成失败，已回退模板: ${err instanceof Error ? err.message : String(err)}`,
+                );
             }
         }
 

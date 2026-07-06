@@ -3,11 +3,12 @@ import { loadLLMConfig, saveGlobalConfig } from 'repowiki-core';
 import chalk from 'chalk';
 import * as readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { maskKey, promptSecret } from '../util/prompt.js';
 
 export const loginCommand = new Command('login')
     .description('交互式配置大语言模型（LLM）API 鉴权凭证')
     .action(async () => {
-        console.log(chalk.bold.cyan('\n🗝️  RepoWiki 鉴权登录向导\n'));
+        console.log(chalk.bold.cyan('\nRepoWiki 鉴权登录向导\n'));
 
         const rl = readline.createInterface({ input, output });
 
@@ -24,12 +25,15 @@ export const loginCommand = new Command('login')
             const modelInput = await rl.question(modelPrompt);
             const modelName = modelInput.trim() || currentConfig.modelName || 'gpt-4o';
 
-            // 3. 获取 API Key
+            // 3. 获取 API Key（掩码输入，不回显明文）
+            // readline 会与 promptSecret 的 raw mode 抢占 stdin，先关闭
+            rl.close();
+
             const hasExistingKey = !!currentConfig.apiKey;
             const keyPromptStr = hasExistingKey
-                ? `请输入 API 密钥 (API Key) ${chalk.gray(`[留空保留已有密钥: ${currentConfig.apiKey.slice(0, 6)}...${currentConfig.apiKey.slice(-4)}]: `)}`
+                ? `请输入 API 密钥 (API Key) ${chalk.gray(`[留空保留已有密钥: ${maskKey(currentConfig.apiKey)}]: `)}`
                 : '请输入 API 密钥 (API Key): ';
-            const keyInput = await rl.question(keyPromptStr);
+            const keyInput = await promptSecret(keyPromptStr);
             let apiKey = keyInput.trim();
 
             if (!apiKey && hasExistingKey) {
@@ -37,8 +41,7 @@ export const loginCommand = new Command('login')
             }
 
             if (!apiKey) {
-                console.error(chalk.red('\n❌ 错误: API 密钥不能为空。'));
-                rl.close();
+                console.error(chalk.red('\n错误: API 密钥不能为空。'));
                 process.exit(1);
             }
 
@@ -49,11 +52,10 @@ export const loginCommand = new Command('login')
                 apiKey,
             });
 
-            console.log(chalk.green('\n✓ 凭证保存成功！配置文件路径: ~/.repowiki/config.json\n'));
+            console.log(chalk.green('\n凭证保存成功。配置文件路径: ~/.repowiki/config.json\n'));
         } catch (err: any) {
-            console.error(chalk.red('\n❌ 配置失败:'), err?.message || err);
-            process.exit(1);
-        } finally {
+            console.error(chalk.red('\n错误: 配置失败:'), err?.message || err);
             rl.close();
+            process.exit(1);
         }
     });
