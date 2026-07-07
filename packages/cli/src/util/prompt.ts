@@ -81,6 +81,8 @@ function readLineFromStdin(promptText: string): Promise<string> {
     return new Promise((resolve) => {
         let data = '';
         stdin.setEncoding('utf-8');
+        // readline.close() 会显式 pause stdin，挂 'data' 监听不会自动恢复
+        stdin.resume();
         stdin.on('data', (chunk: string) => {
             data += chunk;
             const nl = data.indexOf('\n');

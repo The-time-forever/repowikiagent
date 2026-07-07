@@ -3,6 +3,8 @@
  */
 
 import { Box, Text } from 'ink';
+import { useTerminalSize } from '../hooks/useTerminalSize.js';
+import { Logo } from './Logo.js';
 import { SelectMenu } from './SelectMenu.js';
 import type { TuiBase } from '../types.js';
 
@@ -14,11 +16,10 @@ interface Props {
 }
 
 export function FirstRunScreen({ base, isActive, onGenerate, onExit }: Props) {
+    const { columns, rows } = useTerminalSize();
     return (
         <Box flexDirection="column" paddingX={2} paddingY={1} flexGrow={1}>
-            <Text bold color="cyan">
-                RepoWiki
-            </Text>
+            <Logo width={columns - 4} height={rows - 10} />
             <Box marginTop={1}>
                 <Text>
                     当前项目还没有生成 Wiki: <Text dimColor>{base.workspacePath}</Text>

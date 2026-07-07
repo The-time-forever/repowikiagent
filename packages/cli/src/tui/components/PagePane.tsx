@@ -8,6 +8,7 @@ import type { WikiIndexEntry } from 'repowiki-core';
 import { ensureVisible, truncate, wrapLines } from '../format.js';
 import type { Action } from '../state.js';
 import type { PageView, SourceItem } from '../types.js';
+import { Logo } from './Logo.js';
 
 interface Props {
     entry: WikiIndexEntry | null;
@@ -59,7 +60,14 @@ export function PagePane(props: Props) {
 
     let body;
     if (!entry) {
-        body = <Text dimColor>在左侧选择页面后回车打开；/ 可搜索页面。</Text>;
+        body = (
+            <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
+                <Logo width={contentWidth} height={bodyHeight - 2} showTagline />
+                <Box marginTop={1}>
+                    <Text dimColor>在左侧选择页面后回车打开；/ 可搜索页面。</Text>
+                </Box>
+            </Box>
+        );
     } else if (view === 'sources') {
         const listOffset = ensureVisible(sourceCursor, 0, bodyHeight - 1);
         body = (
