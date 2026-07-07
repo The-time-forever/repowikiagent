@@ -20,3 +20,9 @@ export {
     type WikiItem,
     type BuildMetadataParams,
 } from './metadata-writer.js';
+
+export {
+    buildWikiTree,
+    splitDependentFiles,
+    type WikiTreeNode,
+} from './tree.js';

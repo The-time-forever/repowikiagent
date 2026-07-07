@@ -1,6 +1,6 @@
 {
   "name": "repowiki-agent",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "RepoWiki 命令行工具",
   "type": "module",
   "license": "MIT",
@@ -30,11 +30,15 @@
     "repowiki-core": "workspace:*",
     "commander": "^12.1.0",
     "chalk": "^5.3.0",
-    "ora": "^8.0.0"
+    "ora": "^8.0.0",
+    "ink": "^5.2.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
     "rimraf": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.12"
   }
 }

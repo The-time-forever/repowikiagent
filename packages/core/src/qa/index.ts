@@ -5,3 +5,4 @@
 export { loadWikiIndex, WikiNotFoundError, type WikiIndexEntry } from './wiki-index.js';
 export { retrieve, tokenize, type RetrievedPage } from './retriever.js';
 export { answerQuestion, type QaAnswer } from './answerer.js';
+export { parseCitations, type SourceCitation } from './citations.js';

@@ -150,6 +150,17 @@ repowiki chat          # 多轮问答，/exit 退出
 
 检索在本地对已生成的 wiki 进行（无需向量库）。
 
+### 终端交互界面（TUI）
+
+```powershell
+repowiki            # 交互式终端下直接运行 = 进入 TUI（未生成 wiki 时引导生成）
+repowiki tui [path] # 显式进入；-l zh|en 指定语言，-k <n> 指定问答检索页数
+```
+
+TUI 提供三栏界面：左侧 Wiki 目录树（↑↓ 选择、←→ 折叠展开、Enter 打开）、右侧页面正文（滚动阅读，`r` 查看引用列表并可 Enter 用 VS Code 打开到源码行）、底部对话框（`a` 针对当前页提问、`A` 针对全库提问，回答带页面来源与源码引用）。`/` 搜索页面，`u` 增量更新/全量重建，`q` 退出。
+
+启动时若检测到仓库自上次生成后有提交变更（依据元数据记录的 commit），会提示一键增量更新；非 git 项目不做自动扫描，仅 `u` 手动触发。非交互终端（管道/CI）下裸 `repowiki` 仍输出帮助，脚本行为不受影响。
+
 ### CI 集成
 
 把 [`examples/github-actions/repowiki-update.yml`](examples/github-actions/repowiki-update.yml) 复制到你项目的 `.github/workflows/` 下，即可在每次 push 到 `main` 时增量更新 wiki 并自动提交。需要在仓库 secrets 配置 `REPOWIKI_API_KEY`，并确保项目的 .gitignore 没有排除 `.repowiki/`。

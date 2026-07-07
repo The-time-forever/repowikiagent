@@ -150,6 +150,17 @@ repowiki chat          # multi-turn REPL, /exit to quit
 
 Retrieval runs locally over the generated wiki (no vector DB); answers cite page names and `file://path#L10-L42` source references.
 
+### Interactive terminal UI (TUI)
+
+```powershell
+repowiki            # bare command in an interactive terminal = enter the TUI (guides generation if no wiki yet)
+repowiki tui [path] # explicit entry; -l zh|en picks the language, -k <n> sets Q&A retrieval page count
+```
+
+Three-pane layout: wiki tree on the left (arrow keys to navigate, Enter to open), page content on the right (scrollable; press `r` for the reference list and Enter to open a cited source line in VS Code), and a chat box at the bottom (`a` asks about the current page, `A` asks the whole repo; answers cite pages and source lines). `/` searches pages, `u` runs an incremental update or force rebuild, `q` quits.
+
+On startup, if the repo has commits newer than the recorded generation commit, the TUI offers a one-key incremental update; non-git projects are never auto-scanned (manual `u` only). In non-interactive contexts (pipes/CI) the bare `repowiki` still prints help, so scripts are unaffected.
+
 ### CI integration
 
 Copy [`examples/github-actions/repowiki-update.yml`](examples/github-actions/repowiki-update.yml) into your project's `.github/workflows/` to incrementally update the wiki on every push to `main` and commit the result. Requires `REPOWIKI_API_KEY` in repo secrets, `fetch-depth: 0` (already in the template), and `.repowiki/` not being gitignored in your project.
