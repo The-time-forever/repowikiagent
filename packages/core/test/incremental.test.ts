@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findStale, assignAddedFiles, entryToCatalogNode } from '../dist/index.js';
+import { findStale, assignAddedFiles, clusterNewModules, buildClusterNodes, entryToCatalogNode, getLabels } from '../dist/index.js';
 import type { CatalogNode, ChangeSets } from '../dist/index.js';
 
 function node(id: string, deps: string[], extra: Partial<CatalogNode> = {}): CatalogNode {
@@ -76,6 +76,47 @@ describe('assignAddedFiles', () => {
         const catalog = [node('scanner', ['src\\scanner\\a.ts'])];
         const { assignedByNode } = assignAddedFiles(catalog, ['src\\scanner\\new.ts']);
         expect(assignedByNode.get('scanner')).toEqual(['src/scanner/new.ts']);
+    });
+});
+
+describe('clusterNewModules', () => {
+    it('clusters files sharing a directory when the cluster has 2+ files', () => {
+        const clusters = clusterNewModules(['src/newmod/a.ts', 'src/newmod/b.ts', 'src/other/x.ts']);
+        expect(clusters.get('src/newmod')).toEqual(['src/newmod/a.ts', 'src/newmod/b.ts']);
+        expect(clusters.has('src/other')).toBe(false); // 单文件不成簇
+    });
+
+    it('skips root-level stray files', () => {
+        const clusters = clusterNewModules(['a.ts', 'b.ts']);
+        expect(clusters.size).toBe(0);
+    });
+});
+
+describe('buildClusterNodes', () => {
+    const labels = getLabels('zh');
+
+    it('attaches new nodes under the existing modules section', () => {
+        const section = node('sec', ['x'], {
+            isSection: true,
+            filename: `${labels.plan.modulesDir}/${labels.plan.modulesDir}.md`,
+        });
+        const clusters = new Map([['src/newmod', ['src/newmod/a.ts', 'src/newmod/b.ts']]]);
+        const created = buildClusterNodes(clusters, [section], labels);
+        expect(created).toHaveLength(1);
+        expect(created[0].parentId).toBe('sec');
+        expect(created[0].layerLevel).toBe(1);
+        expect(created[0].dependentFiles).toEqual(['src/newmod/a.ts', 'src/newmod/b.ts']);
+    });
+
+    it('falls back to top-level and dedupes filename collisions', () => {
+        const existing = node('old', ['x'], {
+            filename: `${labels.plan.modulesDir}/${labels.plan.moduleTitle('newmod')}.md`,
+        });
+        const clusters = new Map([['src/newmod', ['src/newmod/a.ts', 'src/newmod/b.ts']]]);
+        const created = buildClusterNodes(clusters, [existing], labels);
+        expect(created[0].parentId).toBeUndefined();
+        expect(created[0].layerLevel).toBe(0);
+        expect(created[0].filename).toContain('-2.md');
     });
 });
 

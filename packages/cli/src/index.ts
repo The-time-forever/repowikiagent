@@ -6,6 +6,8 @@ import { generateCommand } from './commands/generate.js';
 import { scanCommand } from './commands/scan.js';
 import { configCommand } from './commands/config.js';
 import { loginCommand } from './commands/login.js';
+import { askCommand } from './commands/ask.js';
+import { chatCommand } from './commands/chat.js';
 
 // 运行时读取包版本，避免硬编码与 package.json 脱节
 const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -22,5 +24,7 @@ program.addCommand(generateCommand);
 program.addCommand(scanCommand);
 program.addCommand(configCommand);
 program.addCommand(loginCommand);
+program.addCommand(askCommand);
+program.addCommand(chatCommand);
 
 program.parse(process.argv);

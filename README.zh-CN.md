@@ -117,13 +117,42 @@ repowiki generate [path]
 -l, --lang <lang>        文档语言：zh | en | both（默认 en）
 -s, --strategy <s>       目录组织策略：feature | package（默认 feature）
 --force-rebuild          强制全量重建，忽略已有元数据的增量更新
+--dry-run                只估算成本（页数、LLM 调用数、token 量），零调用零写入
+--slug-filenames         文件名使用 ASCII slug（跨平台与 URL 兼容）
 --skip-llm               使用本地模式生成
 --json-stdout            以 JSON Lines 输出进度
 ```
 
+### 成本预估（dry run）
+
+在花费 token 之前，先预览一次运行的成本：
+
+```powershell
+repowiki generate . --dry-run
+```
+
+输出逐页表格（grounding 文件数、预计输入/输出 token）与合计，全程零 LLM 调用、零写入。已有元数据时按增量口径估算受影响页。
+
 ### 增量更新
 
 首次生成后，`.repowiki/<lang>/meta/repowiki-metadata.json` 会记录每个页面的 `dependent_files` 及其内容指纹。再次运行 `repowiki generate` 时，会检测变更文件（有 `git` 时走 git 快路，否则按内容哈希），反查受影响页面并**只重生成这些页**，其余页面原样保留；无变更时报告"已是最新"且不写入任何文件。使用 `--force-rebuild` 可跳过增量、全量重建。
+
+目录结构会随项目演进：新增文件落在已有页面覆盖的目录中会归入该页；**新目录**下有 2 个以上文件时会自动聚类成新页挂入模块分区，侧边栏与首页索引同步刷新。
+
+### 代码库问答
+
+wiki 生成之后，可以直接对它提问（回答带页面来源与源码行引用）：
+
+```powershell
+repowiki ask "增量更新是怎么实现的?"
+repowiki chat          # 多轮问答，/exit 退出
+```
+
+检索在本地对已生成的 wiki 进行（无需向量库）。
+
+### CI 集成
+
+把 [`examples/github-actions/repowiki-update.yml`](examples/github-actions/repowiki-update.yml) 复制到你项目的 `.github/workflows/` 下，即可在每次 push 到 `main` 时增量更新 wiki 并自动提交。需要在仓库 secrets 配置 `REPOWIKI_API_KEY`，并确保项目的 .gitignore 没有排除 `.repowiki/`。
 
 ```powershell
 repowiki scan [path] --pretty

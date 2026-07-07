@@ -117,13 +117,42 @@ Useful options:
 -l, --lang <lang>        Documentation language: zh | en | both (default: en)
 -s, --strategy <s>       Catalog organization: feature | package (default: feature)
 --force-rebuild          Full rebuild, ignoring incremental updates from existing metadata
+--dry-run                Estimate cost only (pages, LLM calls, tokens) — no LLM calls, no writes
+--slug-filenames         ASCII slug filenames (cross-platform / URL friendly)
 --skip-llm               Use local-only generation
 --json-stdout            Stream progress as JSON Lines
 ```
 
+### Cost estimation (dry run)
+
+Before spending tokens, preview what a run would cost:
+
+```powershell
+repowiki generate . --dry-run
+```
+
+This prints a per-page table (grounded files, estimated input/output tokens) and totals, with zero LLM calls and zero writes. With existing metadata it estimates the incremental update instead of a full build.
+
 ### Incremental updates
 
 After the first run, a `.repowiki/<lang>/meta/repowiki-metadata.json` records each page's `dependent_files` plus a content fingerprint. Re-running `repowiki generate` detects changed files (via `git` when available, else content hashing), reverse-looks-up the affected pages, and regenerates **only those** — leaving every unchanged page untouched. When nothing changed, it reports "up to date" and writes nothing. Use `--force-rebuild` to bypass this and regenerate everything.
+
+The catalog also evolves: files added to a directory an existing page covers are assigned to that page; a **new directory** with 2+ files automatically becomes a new page under the modules section, and the sidebar/home index is refreshed accordingly.
+
+### Ask questions about your codebase
+
+Once a wiki exists, query it with source-grounded answers:
+
+```powershell
+repowiki ask "How does incremental update work?"
+repowiki chat          # multi-turn REPL, /exit to quit
+```
+
+Retrieval runs locally over the generated wiki (no vector DB); answers cite page names and `file://path#L10-L42` source references.
+
+### CI integration
+
+Copy [`examples/github-actions/repowiki-update.yml`](examples/github-actions/repowiki-update.yml) into your project's `.github/workflows/` to incrementally update the wiki on every push to `main` and commit the result. Requires `REPOWIKI_API_KEY` in repo secrets, `fetch-depth: 0` (already in the template), and `.repowiki/` not being gitignored in your project.
 
 ```powershell
 repowiki scan [path] --pretty

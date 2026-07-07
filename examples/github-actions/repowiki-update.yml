@@ -1,0 +1,49 @@
+# RepoWiki 自动更新模板
+#
+# 用法:
+#   1. 把本文件复制到你的项目 .github/workflows/ 下
+#   2. 在仓库 Settings → Secrets 配置 REPOWIKI_API_KEY(以及可选的 endpoint/model)
+#   3. 确保 .repowiki/ 没有被项目 .gitignore 排除(否则无法提交生成结果)
+#
+# 每次 push 到 main 时增量更新 .repowiki 并提交(无变更时不产生提交)。
+
+name: Update RepoWiki
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repowiki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 增量更新通过 git diff 对比上次生成时的 commit,需要完整历史
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Generate wiki (incremental)
+        run: npx -y repowiki-agent@latest generate . --lang zh --json-stdout
+        env:
+          REPOWIKI_API_KEY: ${{ secrets.REPOWIKI_API_KEY }}
+          REPOWIKI_BASE_URL: ${{ vars.REPOWIKI_BASE_URL }}
+          REPOWIKI_MODEL: ${{ vars.REPOWIKI_MODEL }}
+
+      - name: Commit wiki changes
+        run: |
+          if git diff --quiet .repowiki && [ -z "$(git status --porcelain .repowiki)" ]; then
+            echo "Wiki is up to date."
+            exit 0
+          fi
+          git config user.name "repowiki-bot"
+          git config user.email "repowiki-bot@users.noreply.github.com"
+          git add .repowiki
+          git commit -m "docs: update repowiki [skip ci]"
+          git push

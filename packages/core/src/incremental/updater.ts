@@ -8,10 +8,11 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { AnalysisResult, CatalogNode } from '../models/index.js';
+import type { AnalysisResult, CatalogNode, WikiPage } from '../models/index.js';
 import type { LLMClient } from '../llm/index.js';
 import type { WikiLabels } from '../i18n/labels.js';
-import { WikiGenerator } from '../generator/index.js';
+import { WikiGenerator, generateSidebar, generateHome } from '../generator/index.js';
+import { hashId, slugify } from '../generator/catalog-builder.js';
 import { mapWithConcurrency } from '../util/concurrency.js';
 import { fingerprintFile } from '../metadata/fingerprint.js';
 import type { RepowikiMetadata, WikiCatalogEntry } from '../metadata/metadata-writer.js';
@@ -37,8 +38,10 @@ export interface IncrementalResult {
     method: 'git' | 'hash';
     /** 目录亲和归入已有页面的新增文件数 */
     addedAssigned: number;
-    /** 未能归入任何页面的新增文件（相对路径） */
+    /** 未能归入任何页面且未聚类成新页的新增文件（相对路径） */
     addedUnassigned: string[];
+    /** 由新目录簇创建的新页面标题 */
+    createdPages: string[];
 }
 
 export interface IncrementalDeps {
@@ -137,6 +140,77 @@ export function findStale(
     return { stale, orphaned };
 }
 
+/** 目录簇成页的最小文件数：低于此数的散文件只提示不建页 */
+const MIN_CLUSTER_SIZE = 2;
+
+/**
+ * 把无归属的新增文件按目录聚类成"新模块"候选。
+ * 跳过根目录散文件；仅保留 ≥ MIN_CLUSTER_SIZE 个文件的目录簇。
+ *
+ * @returns 目录 → 文件列表（均为 posix 规范化相对路径）
+ */
+export function clusterNewModules(unassigned: Iterable<string>): Map<string, string[]> {
+    const byDir = new Map<string, string[]>();
+    for (const raw of unassigned) {
+        const file = norm(raw);
+        const dir = path.posix.dirname(file);
+        if (dir === '.') continue; // 根目录散文件不成页
+        const list = byDir.get(dir) ?? [];
+        list.push(file);
+        byDir.set(dir, list);
+    }
+    for (const [dir, files] of byDir) {
+        if (files.length < MIN_CLUSTER_SIZE) byDir.delete(dir);
+    }
+    return byDir;
+}
+
+/**
+ * 把目录簇构造成新的 CatalogNode：挂到既有的模块分区（isSection 且位于
+ * modulesDir 下）之下；分区不存在则作为顶层页。filename 冲突时追加序号。
+ */
+export function buildClusterNodes(
+    clusters: Map<string, string[]>,
+    catalog: CatalogNode[],
+    labels: WikiLabels,
+): CatalogNode[] {
+    if (clusters.size === 0) return [];
+
+    const P = labels.plan;
+    const existingFilenames = new Set(catalog.map((n) => norm(n.filename)));
+    const section = catalog.find(
+        (n) => n.isSection && norm(n.filename).startsWith(`${P.modulesDir}/`),
+    );
+
+    const created: CatalogNode[] = [];
+    for (const [dir, files] of clusters) {
+        const base = path.posix.basename(dir);
+        const title = P.moduleTitle(base);
+        let filename = `${P.modulesDir}/${title}.md`;
+        let suffix = 2;
+        while (existingFilenames.has(norm(filename))) {
+            filename = `${P.modulesDir}/${title}-${suffix++}.md`;
+        }
+        existingFilenames.add(norm(filename));
+
+        created.push({
+            id: hashId(filename),
+            title,
+            slug: slugify(base),
+            summary: P.moduleSummary(base),
+            prompt: '',
+            dependentFiles: files,
+            parentId: section?.id,
+            layerLevel: section ? 1 : 0,
+            category: '',
+            diagrams: [],
+            isSection: false,
+            filename,
+        });
+    }
+    return created;
+}
+
 /** 新增文件归页结果 */
 export interface AddedAssignment {
     /** 页 id → 追加进该页 dependentFiles 的新增文件 */
@@ -221,8 +295,15 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
     }
     const staleAll = [...staleById.values()];
 
-    // 无 stale、无 orphaned → 原样停手
-    if (staleAll.length === 0 && orphaned.length === 0) {
+    // 目录演进：无归属的新增文件按目录聚类成新页候选
+    const clusters = clusterNewModules(addedUnassigned);
+    const clusteredFiles = new Set([...clusters.values()].flat());
+    const leftoverUnassigned = addedUnassigned.filter((f) => !clusteredFiles.has(norm(f)));
+
+    const createdNodes = buildClusterNodes(clusters, catalog, deps.labels);
+
+    // 无 stale、无 orphaned、无新页 → 原样停手
+    if (staleAll.length === 0 && orphaned.length === 0 && createdNodes.length === 0) {
         return {
             upToDate: true,
             regenerated: [],
@@ -231,7 +312,8 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
             untouched: catalog.length,
             method: changes.method,
             addedAssigned: 0,
-            addedUnassigned,
+            addedUnassigned: leftoverUnassigned,
+            createdPages: [],
         };
     }
 
@@ -243,16 +325,17 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         onWarn: deps.onWarn,
     });
 
-    const plannedSummary = catalog.map((n) => `- ${n.title} (${n.filename})`).join('\n');
+    const fullCatalog = [...catalog, ...createdNodes];
+    const plannedSummary = fullCatalog.map((n) => `- ${n.title} (${n.filename})`).join('\n');
     const now = new Date().toISOString();
 
-    // 1) 重生成 stale 页
-    await mapWithConcurrency(staleAll, deps.concurrency, async (node) => {
+    // 1) 重生成 stale 页 + 生成新目录簇页
+    await mapWithConcurrency([...staleAll, ...createdNodes], deps.concurrency, async (node) => {
         const page = await generator.generateNode(
             workspacePath,
             node,
             analysisResult,
-            catalog,
+            fullCatalog,
             plannedSummary,
         );
         await generator.savePage(page);
@@ -283,9 +366,58 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         (r) => !orphanIds.has(r.source_id) && !orphanIds.has(r.target_id),
     );
 
-    // 刷新 stale 页依赖文件的指纹；移除已删除文件的指纹
+    // 3.5) 新页写入元数据三表（结构对齐 metadata-writer 的 buildMetadata）
+    let nextRelId = metadata.knowledge_relations.reduce((mx, r) => Math.max(mx, r.id), 0) + 1;
+    for (const node of createdNodes) {
+        metadata.wiki_catalogs.push({
+            id: node.id,
+            repo_id: metadata.wiki_repo.id,
+            name: node.title,
+            description: node.slug,
+            prompt: node.prompt,
+            ...(node.parentId ? { parent_id: node.parentId } : {}),
+            layer_level: node.layerLevel,
+            progress_status: 'completed',
+            dependent_files: node.dependentFiles.join(','),
+            gmt_create: now,
+            gmt_modified: now,
+            filename: node.filename,
+            diagrams: node.diagrams,
+            category: node.category,
+            is_section: node.isSection,
+        });
+        metadata.wiki_items.push({
+            catalog_id: node.id,
+            id: hashId(`item:${node.id}`),
+            repo_id: metadata.wiki_repo.id,
+            title: node.title,
+            description: node.slug,
+            extend: '{}',
+            progress_status: 'completed',
+            reference_count: 0,
+            gmt_create: now,
+            gmt_modified: now,
+        });
+        if (node.parentId) {
+            metadata.knowledge_relations.push({
+                id: nextRelId++,
+                source_id: node.parentId,
+                target_id: node.id,
+                source_type: 'WIKI_ITEM',
+                target_type: 'WIKI_ITEM',
+                relationship_type: 'PARENT_CHILD',
+                extra: `Wiki parent-child relationship: -> ${node.title}`,
+                gmt_create: now,
+                gmt_modified: now,
+            });
+        }
+    }
+
+    // 刷新 stale 页与新页依赖文件的指纹；移除已删除文件的指纹
     const refreshFiles = new Set<string>();
-    for (const node of staleAll) node.dependentFiles.forEach((f) => refreshFiles.add(norm(f)));
+    for (const node of [...staleAll, ...createdNodes]) {
+        node.dependentFiles.forEach((f) => refreshFiles.add(norm(f)));
+    }
     for (const rel of refreshFiles) {
         const fp = await fingerprintFile(workspacePath, rel);
         if (fp) metadata.source_index[rel] = fp;
@@ -294,6 +426,20 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
     for (const rel of changes.deleted) {
         delete metadata.source_index[norm(rel)];
     }
+
+    // 4) 目录结构发生变化（新页/删页）或页面更新时，重建导航（修复增量后侧边栏过期）
+    const pagesForNav: WikiPage[] = metadata.wiki_catalogs.map((c) => ({
+        title: c.name,
+        filename: c.filename,
+        summary: c.description,
+        content: '',
+        sourceRefs: [],
+    }));
+    const sidebarContent = generateSidebar(pagesForNav, deps.labels);
+    const homeContent = generateHome(pagesForNav, analysisResult.project, deps.labels);
+    await fs.writeFile(path.join(contentDir, '_Sidebar.md'), sidebarContent, 'utf-8');
+    await fs.writeFile(path.join(contentDir, 'Home.md'), homeContent, 'utf-8');
+    metadata.wiki_readme.content = homeContent;
 
     // 更新 generated_at_commit
     metadata.generated_at_commit = (await getGitCommit(workspacePath)) ?? metadata.generated_at_commit;
@@ -308,6 +454,7 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         untouched: catalog.length - staleAll.length - orphaned.length,
         method: changes.method,
         addedAssigned,
-        addedUnassigned,
+        addedUnassigned: leftoverUnassigned,
+        createdPages: createdNodes.map((n) => n.title),
     };
 }

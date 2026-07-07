@@ -16,7 +16,9 @@ import { getLabels, normalizeLang, type WikiLang } from './i18n/labels.js';
 import { defaultWikiRoot, resolveWikiPaths } from './output/layout.js';
 import { mapWithConcurrency } from './util/concurrency.js';
 import { computeSourceIndex, buildMetadata, writeMetadata, readMetadata } from './metadata/index.js';
-import { runIncrementalUpdate } from './incremental/index.js';
+import { runIncrementalUpdate, computeChangeSets, findStale, assignAddedFiles, entryToCatalogNode } from './incremental/index.js';
+import { buildDryRunReport, type DryRunReport } from './estimate/dry-run.js';
+import { buildDefaultCatalog } from './generator/catalog-builder.js';
 import { getGitCommit } from './util/git.js';
 import type { AnalysisResult, ProjectProfile, WikiPage, CatalogNode, CatalogStrategy } from './models/index.js';
 
@@ -33,12 +35,17 @@ export interface PipelineOptions {
     strategy?: CatalogStrategy;
     /** 强制全量重建（忽略已有元数据的增量分支） */
     forceRebuild?: boolean;
+    /** 只估算成本不生成：发出 DRY_RUN 事件后返回，零 LLM 调用、零写入 */
+    dryRun?: boolean;
+    /** 文件名使用 ASCII slug（跨平台/URL 兼容），默认使用本地化标题 */
+    slugFilenames?: boolean;
     onProgress?: (event: PipelineEvent) => void;
 }
 
 export type PipelineEvent =
     | { type: 'PROGRESS'; stage: string; progress: number; message: string }
     | { type: 'WARN'; stage: string; message: string }
+    | { type: 'DRY_RUN'; report: DryRunReport }
     | { type: 'DONE'; payload: { docsPath: string; pagesCount: number } }
     | { type: 'ERROR'; code: number; message: string };
 
@@ -55,6 +62,8 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         lang = 'en',
         strategy = 'feature',
         forceRebuild = false,
+        dryRun = false,
+        slugFilenames = false,
         onProgress,
     } = options;
 
@@ -90,7 +99,8 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
 
         let llmClient: LLMClient | null = null;
 
-        if (!skipLlm) {
+        // dry-run 只估算不生成，保证零网络调用
+        if (!skipLlm && !dryRun) {
             const llmConfig = await loadLLMConfig(workspacePath);
             if (modelName) {
                 llmConfig.modelName = modelName;
@@ -184,6 +194,52 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         }
 
         // ====================================================================
+        // 3.4 dry-run 分支：只估算成本，发出 DRY_RUN 事件后返回（零 LLM、零写入）
+        // ====================================================================
+        if (dryRun) {
+            emitProgress('DryRun', 70, '估算生成成本（不调用 LLM、不写入文件）...');
+
+            let report: DryRunReport;
+            if (incrementalMode && existingMetadata) {
+                const changes = await computeChangeSets(workspacePath, existingMetadata);
+                const catalogNodes = existingMetadata.wiki_catalogs.map(entryToCatalogNode);
+                const { stale, orphaned } = findStale(catalogNodes, changes);
+
+                const addedInScan = [...changes.added].filter((f) =>
+                    fileMeta.has(f.replace(/\\/g, '/')),
+                );
+                const { assignedByNode, unassigned } = assignAddedFiles(catalogNodes, addedInScan);
+
+                // 归页的新增文件会把对应页拉入重生成集
+                const staleIds = new Set(stale.map((n) => n.id));
+                for (const id of assignedByNode.keys()) {
+                    if (staleIds.has(id)) continue;
+                    const n = catalogNodes.find((x) => x.id === id);
+                    if (n) {
+                        stale.push(n);
+                        staleIds.add(id);
+                    }
+                }
+
+                report = await buildDryRunReport(workspacePath, stale, analysisResult, 'incremental', [
+                    `变更文件 ${changes.changed.size + changes.deleted.size + changes.added.size}，受影响 ${stale.length} 页，将删除 ${orphaned.length} 页。`,
+                    ...(unassigned.length > 0
+                        ? [`${unassigned.length} 个新增文件暂无归属页面。`]
+                        : []),
+                ]);
+            } else {
+                const catalogNodes = buildDefaultCatalog(analysisResult, labels, strategy, slugFilenames);
+                report = await buildDryRunReport(workspacePath, catalogNodes, analysisResult, 'full', [
+                    '目录按确定性建树估算；启用 LLM 规划时实际目录可能不同，且另有 1 次规划调用。',
+                ]);
+            }
+
+            if (onProgress) onProgress({ type: 'DRY_RUN', report });
+            else console.log(JSON.stringify({ type: 'DRY_RUN', report }));
+            return analysisResult;
+        }
+
+        // ====================================================================
         // 3.5 增量更新分支（Phase 0）：已有元数据且未强制重建时，只重生成受影响页
         // ====================================================================
         if (incrementalMode && existingMetadata) {
@@ -205,17 +261,21 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
                 if (result.addedUnassigned.length > 0) {
                     emitWarn(
                         'Incremental',
-                        `${result.addedUnassigned.length} 个新增文件未被任何页面覆盖（如 ${result.addedUnassigned
+                        `${result.addedUnassigned.length} 个新增散置文件未被任何页面覆盖（如 ${result.addedUnassigned
                             .slice(0, 3)
-                            .join(', ')}），建议使用 --force-rebuild 重新规划目录。`,
+                            .join(', ')}）。同目录文件达到 2 个会自动成页，或使用 --force-rebuild 重新规划目录。`,
                     );
                 }
 
                 const assignedNote =
                     result.addedAssigned > 0 ? `，${result.addedAssigned} 个新增文件已归入相关页` : '';
+                const createdNote =
+                    result.createdPages.length > 0
+                        ? `，新建 ${result.createdPages.length} 页（${result.createdPages.slice(0, 3).join('、')}）`
+                        : '';
                 const msg = result.upToDate
                     ? `Wiki (${wikiLang}) 已是最新：${result.untouched} 页无源码变更（${result.method}）。未做改动。`
-                    : `增量更新完成（${result.method}）：变更文件 ${result.changedFiles}，重生成 ${result.regenerated.length} 页，删除 ${result.orphaned.length} 页，保留 ${result.untouched} 页${assignedNote}。`;
+                    : `增量更新完成（${result.method}）：变更文件 ${result.changedFiles}，重生成 ${result.regenerated.length} 页，删除 ${result.orphaned.length} 页，保留 ${result.untouched} 页${assignedNote}${createdNote}。`;
                 emitProgress('Incremental', 100, msg);
 
                 const doneEvent = {
@@ -242,6 +302,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             labels,
             fileMeta,
             onWarn: (message) => emitWarn('LLM Inference', message),
+            slugFilenames,
         });
         const catalog: CatalogNode[] = await generator.planCatalog(analysisResult, strategy);
 

@@ -52,9 +52,16 @@ export function buildDefaultCatalog(
     analysisResult: AnalysisResult,
     labels: WikiLabels,
     strategy: CatalogStrategy,
+    slugFilenames = false,
 ): CatalogNode[] {
     const P = labels.plan;
     const nodes: CatalogNode[] = [];
+
+    // slug 模式：目录与文件名使用固定 ASCII（标题仍本地化）
+    const dirs = slugFilenames
+        ? { overview: 'overview', modules: 'core-modules', database: 'database', api: 'api' }
+        : { overview: P.overviewDir, modules: P.modulesDir, database: P.databaseDir, api: P.apiDir };
+    const fname = (title: string, slug: string) => (slugFilenames ? slug : title);
 
     const make = (
         title: string,
@@ -86,7 +93,7 @@ export function buildDefaultCatalog(
         ...analysisResult.project.configFiles.slice(0, 3),
         ...analysisResult.modules.filter((m) => m.directory !== '.').slice(0, 3).map((m) => m.files[0]).filter(Boolean),
     ]);
-    make(P.overviewTitle, 'overview', `${P.overviewDir}/${P.overviewTitle}.md`, {
+    make(P.overviewTitle, 'overview', `${dirs.overview}/${fname(P.overviewTitle, 'overview')}.md`, {
         summary: P.overviewSummary,
         dependentFiles: overviewSeedFiles,
         diagrams: ['architecture'],
@@ -96,7 +103,7 @@ export function buildDefaultCatalog(
     // 2) 核心模块分区 + 每模块子页
     const moduleMods = analysisResult.modules.filter((m) => m.directory !== '.' && m.files.length > 0);
     if (moduleMods.length > 0) {
-        const section = make(P.modulesDir, 'core-modules', `${P.modulesDir}/${P.modulesDir}.md`, {
+        const section = make(P.modulesDir, 'core-modules', `${dirs.modules}/${fname(P.modulesDir, 'core-modules')}.md`, {
             summary: P.moduleSummary(P.modulesDir),
             isSection: true,
             category: 'section',
@@ -104,7 +111,7 @@ export function buildDefaultCatalog(
 
         for (const mod of moduleMods) {
             const title = strategy === 'package' ? mod.moduleName : P.moduleTitle(mod.moduleName);
-            make(title, slugify(mod.moduleName), `${P.modulesDir}/${title}.md`, {
+            make(title, slugify(mod.moduleName), `${dirs.modules}/${fname(title, slugify(mod.moduleName))}.md`, {
                 summary: P.moduleSummary(mod.moduleName),
                 dependentFiles: uniquePaths(mod.files),
                 parentId: section.id,
@@ -117,7 +124,7 @@ export function buildDefaultCatalog(
 
     // 3) 数据库设计
     if (analysisResult.databaseModels.length > 0) {
-        make(P.databaseTitle, 'database-design', `${P.databaseDir}/${P.databaseTitle}.md`, {
+        make(P.databaseTitle, 'database-design', `${dirs.database}/${fname(P.databaseTitle, 'database-design')}.md`, {
             summary: P.databaseSummary,
             dependentFiles: uniquePaths(analysisResult.databaseModels.map((m) => m.filePath)),
             diagrams: ['er'],
@@ -127,7 +134,7 @@ export function buildDefaultCatalog(
 
     // 4) API 参考
     if (analysisResult.apiRoutes.length > 0) {
-        make(P.apiTitle, 'api-reference', `${P.apiDir}/${P.apiTitle}.md`, {
+        make(P.apiTitle, 'api-reference', `${dirs.api}/${fname(P.apiTitle, 'api-reference')}.md`, {
             summary: P.apiSummary,
             dependentFiles: uniquePaths(analysisResult.apiRoutes.map((r) => r.filePath)),
             diagrams: ['api'],
@@ -160,8 +167,23 @@ export interface PlannedCatalogNode {
 export function flattenPlannedCatalog(
     planned: PlannedCatalogNode[],
     knownFiles: Set<string>,
+    slugFilenames = false,
 ): CatalogNode[] {
     const out: CatalogNode[] = [];
+    const usedSegs = new Set<string>();
+
+    /** slug 模式下的路径段：ASCII slug + 去重后缀（中文标题无 slug 时会折叠，需防冲突） */
+    const uniqueSeg = (node: PlannedCatalogNode, parentDir: string): string => {
+        if (!slugFilenames) return node.title;
+        const base = slugify(node.slug || node.title);
+        let seg = base;
+        let n = 2;
+        while (usedSegs.has(`${parentDir}/${seg}`)) {
+            seg = `${base}-${n++}`;
+        }
+        usedSegs.add(`${parentDir}/${seg}`);
+        return seg;
+    };
 
     const walk = (
         node: PlannedCatalogNode,
@@ -170,8 +192,9 @@ export function flattenPlannedCatalog(
         layer: number,
     ): void => {
         const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-        const dir = parentDir ? `${parentDir}/${node.title}` : node.title;
-        const filename = hasChildren ? `${dir}/${node.title}.md` : `${parentDir ? parentDir + '/' : ''}${node.title}.md`;
+        const seg = uniqueSeg(node, parentDir);
+        const dir = parentDir ? `${parentDir}/${seg}` : seg;
+        const filename = hasChildren ? `${dir}/${seg}.md` : `${parentDir ? parentDir + '/' : ''}${seg}.md`;
         const id = hashId(filename);
 
         const deps = uniquePaths(node.dependent_files ?? []).filter((f) => knownFiles.has(f));

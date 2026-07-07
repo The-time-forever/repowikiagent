@@ -31,8 +31,14 @@ export {
 
 export {
     WikiGenerator,
+    selectNodeFiles,
     type WikiGeneratorConfig,
 } from './wiki-generator.js';
+
+export {
+    lintMermaid,
+    lintMermaidBlock,
+} from './mermaid-lint.js';
 
 export {
     slugify,

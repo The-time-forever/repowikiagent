@@ -12,6 +12,7 @@ import { buildWikiPlanPrompt, buildWikiPagePrompt, LLMAuthError } from '../llm/i
 import { getLabels, type WikiLabels } from '../i18n/labels.js';
 import { collectGroundedSources, renderGroundedSources } from '../grounding/source-provider.js';
 import { validateCitations, formatCitationErrors } from '../grounding/citation-validator.js';
+import { lintMermaid } from './mermaid-lint.js';
 import {
     buildDefaultCatalog,
     flattenPlannedCatalog,
@@ -26,6 +27,32 @@ import {
     generateApiDiagram,
 } from './mermaid-generator.js';
 
+/**
+ * 选出节点需要 grounding 的源码文件。
+ * 优先 dependentFiles（按内部依赖入度降序，最被依赖的文件优先进入
+ * collectGroundedSources 的 maxFiles 截断窗口）；为空时回退到若干重要模块的头部文件。
+ */
+export function selectNodeFiles(node: CatalogNode, analysisResult: AnalysisResult): string[] {
+    if (node.dependentFiles.length > 0) {
+        // 内部依赖入度：target 被引用次数（排除外部包）
+        const inDegree = new Map<string, number>();
+        for (const edge of analysisResult.dependencies.edges ?? []) {
+            if (edge.isExternal) continue;
+            const t = edge.target.replace(/\\/g, '/');
+            inDegree.set(t, (inDegree.get(t) ?? 0) + 1);
+        }
+        // 稳定排序：同分保持原顺序
+        return node.dependentFiles
+            .map((f, i) => ({ f, i, score: inDegree.get(f.replace(/\\/g, '/')) ?? 0 }))
+            .sort((a, b) => b.score - a.score || a.i - b.i)
+            .map((x) => x.f);
+    }
+    return analysisResult.modules
+        .filter((m) => m.directory !== '.')
+        .slice(0, 3)
+        .flatMap((m) => m.files.slice(0, 2));
+}
+
 export interface WikiGeneratorConfig {
     outputDir: string;
     concurrency?: number;
@@ -35,23 +62,27 @@ export interface WikiGeneratorConfig {
     fileMeta?: Map<string, number>;
     /** LLM 降级/引用校验未通过等非致命问题的上报通道（缺省静默） */
     onWarn?: (message: string) => void;
+    /** 文件名使用 ASCII slug（跨平台/URL 兼容） */
+    slugFilenames?: boolean;
 }
 
 /**
  * 核心 Wiki 生成器（catalog 树驱动）
  */
 export class WikiGenerator {
-    private config: Required<Omit<WikiGeneratorConfig, 'onWarn'>>;
+    private config: Required<Omit<WikiGeneratorConfig, 'onWarn' | 'slugFilenames'>>;
     private llmClient: LLMClient | null;
     private labels: WikiLabels;
     private fileMeta: Map<string, number>;
     private onWarn: (message: string) => void;
+    private slugFilenames: boolean;
 
     constructor(llmClient: LLMClient | null, config: WikiGeneratorConfig) {
         this.llmClient = llmClient;
         this.labels = config.labels ?? getLabels('zh');
         this.fileMeta = config.fileMeta ?? new Map();
         this.onWarn = config.onWarn ?? (() => {});
+        this.slugFilenames = config.slugFilenames ?? false;
         this.config = {
             outputDir: config.outputDir,
             concurrency: config.concurrency ?? 3,
@@ -72,7 +103,7 @@ export class WikiGenerator {
         analysisResult: AnalysisResult,
         strategy: CatalogStrategy,
     ): Promise<CatalogNode[]> {
-        const fallback = () => buildDefaultCatalog(analysisResult, this.labels, strategy);
+        const fallback = () => buildDefaultCatalog(analysisResult, this.labels, strategy, this.slugFilenames);
 
         if (!this.llmClient) {
             return fallback();
@@ -101,7 +132,7 @@ export class WikiGenerator {
             const planned = await this.llmClient.chatJSON<PlannedCatalogNode[]>(prompt);
             if (Array.isArray(planned) && planned.length > 0) {
                 const known = new Set(this.fileMeta.keys());
-                const flat = flattenPlannedCatalog(planned, known);
+                const flat = flattenPlannedCatalog(planned, known, this.slugFilenames);
                 if (flat.length > 0 && validateCatalog(flat).ok) {
                     return flat;
                 }
@@ -158,8 +189,20 @@ export class WikiGenerator {
                 const { content, value: citations, ok } = await this.llmClient.chatWithValidation(
                     prompt,
                     (c) => {
+                        // 引用校验 + mermaid 语法检查合并为同一份纠正提示
                         const r = validateCitations(c, this.fileMeta);
-                        return { ok: r.ok, value: r.citations, error: formatCitationErrors(r.errors) };
+                        const mermaidErrors = lintMermaid(c);
+                        const errorText = [
+                            formatCitationErrors(r.errors),
+                            ...mermaidErrors.map((e) => `- ${e}`),
+                        ]
+                            .filter(Boolean)
+                            .join('\n');
+                        return {
+                            ok: r.ok && mermaidErrors.length === 0,
+                            value: r.citations,
+                            error: errorText,
+                        };
                     },
                 );
 
@@ -187,18 +230,8 @@ export class WikiGenerator {
         return this.assembleFallbackPage(node, analysisResult);
     }
 
-    /**
-     * 选出该节点需要 grounding 的源码文件。
-     * 优先 dependentFiles；为空时回退到若干重要模块的头部文件（避免空 grounding）。
-     */
     private selectNodeFiles(node: CatalogNode, analysisResult: AnalysisResult): string[] {
-        if (node.dependentFiles.length > 0) {
-            return node.dependentFiles;
-        }
-        return analysisResult.modules
-            .filter((m) => m.directory !== '.')
-            .slice(0, 3)
-            .flatMap((m) => m.files.slice(0, 2));
+        return selectNodeFiles(node, analysisResult);
     }
 
     /**

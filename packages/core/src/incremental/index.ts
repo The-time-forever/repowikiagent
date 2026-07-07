@@ -8,6 +8,8 @@ export {
     computeChangeSets,
     findStale,
     assignAddedFiles,
+    clusterNewModules,
+    buildClusterNodes,
     entryToCatalogNode,
     type ChangeSets,
     type IncrementalResult,

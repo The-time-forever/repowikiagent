@@ -14,6 +14,8 @@ export * from './metadata/index.js';
 export * from './incremental/index.js';
 export * from './i18n/labels.js';
 export * from './output/layout.js';
+export * from './estimate/dry-run.js';
+export * from './qa/index.js';
 export * from './util/concurrency.js';
 export * from './util/git.js';
 export * from './pipeline.js';

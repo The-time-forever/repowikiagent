@@ -2,7 +2,7 @@
   "name": "repowiki-vscode",
   "displayName": "RepoWiki",
   "description": "本地化代码库 Wiki 生成与源码追溯：目录树导航、引用行跳转、增量更新",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "repowiki",
   "license": "MIT",
   "repository": {

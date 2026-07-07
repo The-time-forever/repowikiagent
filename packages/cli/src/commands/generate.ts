@@ -13,6 +13,8 @@ export const generateCommand = new Command('generate')
     .option('-l, --lang <lang>', '文档语言：zh | en | both', 'en')
     .option('-s, --strategy <strategy>', '目录组织策略：feature | package', 'feature')
     .option('--force-rebuild', '强制全量重建，忽略已有元数据的增量更新')
+    .option('--dry-run', '只估算生成成本（页数、LLM 调用数、token 量），不调用模型也不写入文件')
+    .option('--slug-filenames', '文件名使用 ASCII slug（跨平台与 URL 兼容），默认使用本地化标题')
     .option('--skip-llm', '免大模型，仅基于本地模板快速生成文档结构')
     .option('--json-stdout', '以 JSON Lines 格式流式输出执行进度（适用于集成 IDE 插件）')
     .action(async (targetPath, options) => {
@@ -78,6 +80,39 @@ export const generateCommand = new Command('generate')
                 spinner.clear();
                 console.log(chalk.yellow('warn: ') + chalk.dim(`[${event.stage}] `) + event.message);
                 spinner.start();
+            } else if (event.type === 'DRY_RUN') {
+                persistStage();
+                currentStage = '';
+                spinner.succeed(`成本估算完成（${event.report.mode === 'full' ? '全量' : '增量'}）`);
+                const { pages, totals, notes } = event.report;
+                console.log('');
+                if (pages.length === 0) {
+                    console.log('  没有需要生成的页面。');
+                } else {
+                    const titleWidth = Math.min(
+                        32,
+                        Math.max(8, ...pages.map((p) => p.title.length * 2)),
+                    );
+                    console.log(
+                        `  ${'页面'.padEnd(titleWidth)}  文件数  输入tok  输出tok`,
+                    );
+                    for (const p of pages) {
+                        // 中文字符按双宽近似对齐
+                        const pad = Math.max(0, titleWidth - p.title.replace(/[^\x00-\xff]/g, 'xx').length);
+                        console.log(
+                            `  ${p.title}${' '.repeat(pad)}  ${String(p.files).padStart(4)}  ${String(p.estInputTokens).padStart(7)}  ${String(p.estOutputTokens).padStart(7)}`,
+                        );
+                    }
+                }
+                console.log('');
+                console.log(
+                    `  合计: ${totals.pages} 页 / ${totals.llmCalls} 次 LLM 调用 / ` +
+                        `输入约 ${Math.round(totals.estInputTokens / 1000)}k tok / 输出约 ${Math.round(totals.estOutputTokens / 1000)}k tok`,
+                );
+                for (const note of notes) {
+                    console.log(chalk.dim(`  注: ${note}`));
+                }
+                console.log('');
             } else if (event.type === 'DONE') {
                 persistStage();
                 currentStage = '';
@@ -113,6 +148,8 @@ export const generateCommand = new Command('generate')
                     lang,
                     strategy,
                     forceRebuild: !!options.forceRebuild,
+                    dryRun: !!options.dryRun,
+                    slugFilenames: !!options.slugFilenames,
                     onProgress: handleProgress,
                 });
             }
