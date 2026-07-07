@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import type { LLMClient } from '../llm/index.js';
 import { buildSourceSummaryPrompt } from '../llm/index.js';
 import type { WikiLang } from '../i18n/labels.js';
+import { extractSymbols, renderSymbolOutline, languageIdForFile } from '../ast/index.js';
 
 /** 单个文件的 grounded 上下文块 */
 export interface GroundedSource {
@@ -84,17 +85,28 @@ export async function collectGroundedSources(
             const content = await fs.readFile(absPath, 'utf-8');
             const total = content.split('\n').length;
 
-            // 大文件且有 LLM：摘要（标注无精确行号）
+            // AST 符号大纲：为整个文件（含被截断/摘要部分）提供可引用的精确行号锚点
+            let outlineLine = '';
+            const langId = languageIdForFile(relPath);
+            if (langId) {
+                const symbols = await extractSymbols(content, langId);
+                if (symbols.length > 0) {
+                    const label = lang === 'zh' ? '符号大纲' : 'Symbol outline';
+                    outlineLine = `\n${label}: ${renderSymbolOutline(symbols)}`;
+                }
+            }
+
+            // 大文件且有 LLM：摘要（符号大纲补足精确行号锚点）
             if (content.length > summarizeThreshold && llmClient) {
                 const prompt = buildSourceSummaryPrompt(relPath, content.slice(0, 20000));
                 const summary = await llmClient.chat(prompt);
                 const notice =
                     lang === 'zh'
-                        ? '（以下为代码摘要，不含精确行号；如需引用请回到原文件核对行号）'
-                        : '(Summary below — no precise line numbers; return to the file to cite exact lines)';
+                        ? '（以下为代码摘要；引用行号请以符号大纲为准）'
+                        : '(Summary below — cite line numbers from the symbol outline)';
                 sources.push({
                     filePath: relPath,
-                    block: `### ${relPath} ${notice}\n${summary.content}`,
+                    block: `### ${relPath} ${notice}${outlineLine}\n${summary.content}`,
                     lineCount: total,
                     summarized: true,
                     truncated: true,
@@ -108,9 +120,10 @@ export async function collectGroundedSources(
                 lang === 'zh'
                     ? `### 文件: ${relPath}（共 ${total} 行${truncated ? `，仅显示前 ${maxLinesPerFile} 行` : ''}）`
                     : `### File: ${relPath} (${total} lines${truncated ? `, showing first ${maxLinesPerFile}` : ''})`;
+
             sources.push({
                 filePath: relPath,
-                block: `${header}\n\`\`\`\n${text}\n\`\`\``,
+                block: `${header}${outlineLine}\n\`\`\`\n${text}\n\`\`\``,
                 lineCount: total,
                 summarized: false,
                 truncated,

@@ -4,10 +4,12 @@
  */
 
 import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
 import type { FileNode, ModuleInfo, CoreComponent } from '../models/index.js';
 import type { LLMClient } from '../llm/index.js';
 import { buildModuleAnalysisPrompt } from '../llm/index.js';
 import { mapWithConcurrency } from '../util/concurrency.js';
+import { extractSymbols, languageIdForFile, type SymbolInfo } from '../ast/index.js';
 
 // ============================================================================
 // 目录 → 分类标签映射
@@ -206,6 +208,72 @@ interface ModuleAnalysisResponse {
     core_components: Array<{ name: string; description: string }>;
 }
 
+// ============================================================================
+// AST 符号提取（模块级）
+// ============================================================================
+
+/** 每个模块最多做 AST 提取的文件数（控制解析开销） */
+const MAX_AST_FILES_PER_MODULE = 8;
+/** 跳过超大文件的 AST 提取 */
+const MAX_AST_FILE_BYTES = 512 * 1024;
+
+/**
+ * 提取模块头部文件的顶层符号。
+ *
+ * @returns 文件相对路径 → 符号列表（仅含成功提取且非空的文件）
+ */
+async function collectModuleSymbols(
+    rootPath: string,
+    files: string[],
+): Promise<Map<string, SymbolInfo[]>> {
+    const result = new Map<string, SymbolInfo[]>();
+    const candidates = files.filter((f) => languageIdForFile(f)).slice(0, MAX_AST_FILES_PER_MODULE);
+
+    for (const relPath of candidates) {
+        try {
+            const absPath = path.resolve(rootPath, relPath);
+            const stat = await fs.stat(absPath);
+            if (stat.size > MAX_AST_FILE_BYTES) continue;
+            const content = await fs.readFile(absPath, 'utf-8');
+            const symbols = await extractSymbols(content, languageIdForFile(relPath)!);
+            if (symbols.length > 0) result.set(relPath, symbols);
+        } catch {
+            // 单文件失败静默跳过
+        }
+    }
+    return result;
+}
+
+/** 将模块符号表渲染为提示词用的 AST 摘要文本 */
+function renderAstSummaries(symbolsByFile: Map<string, SymbolInfo[]>): string {
+    const lines: string[] = [];
+    for (const [file, symbols] of symbolsByFile) {
+        const items = symbols
+            .slice(0, 12)
+            .map((s) => `${s.exported ? '' : '(内部) '}${s.name} [${s.kind}, L${s.startLine}-${s.endLine}]`)
+            .join(', ');
+        lines.push(`- ${file}: ${items}`);
+    }
+    return lines.join('\n');
+}
+
+/** 基于符号推断核心组件（优先导出符号，按定义体量排序） */
+function componentsFromSymbols(symbolsByFile: Map<string, SymbolInfo[]>): CoreComponent[] {
+    const all: Array<SymbolInfo & { file: string }> = [];
+    for (const [file, symbols] of symbolsByFile) {
+        for (const s of symbols) all.push({ ...s, file });
+    }
+    all.sort(
+        (a, b) =>
+            Number(b.exported) - Number(a.exported) ||
+            b.endLine - b.startLine - (a.endLine - a.startLine),
+    );
+    return all.slice(0, 10).map((s) => ({
+        name: s.name,
+        description: `${s.kind}，定义于 ${s.file}#L${s.startLine}-L${s.endLine}`,
+    }));
+}
+
 /**
  * 将文件聚类为逻辑模块并生成描述
  *
@@ -266,8 +334,13 @@ export async function analyzeModules(
     if (llmClient) {
         // 使用 LLM 逐模块生成描述；受 concurrency 限制并发调用
         await mapWithConcurrency(modules, concurrency, async (mod) => {
+            const symbolsByFile = await collectModuleSymbols(rootPath, mod.files);
             try {
-                const prompt = buildModuleAnalysisPrompt(mod.directory, mod.files.join('\n'), '');
+                const prompt = buildModuleAnalysisPrompt(
+                    mod.directory,
+                    mod.files.join('\n'),
+                    renderAstSummaries(symbolsByFile),
+                );
                 const result = await llmClient.chatJSON<ModuleAnalysisResponse>(prompt);
 
                 if (result && typeof result.summary === 'string') {
@@ -280,18 +353,21 @@ export async function analyzeModules(
                     }));
                 }
             } catch {
-                // LLM 调用失败时使用回退逻辑
+                // LLM 调用失败时使用回退逻辑（有符号时优先符号）
                 mod.summary = generateBasicSummary(
                     mod.moduleName,
                     mod.directory,
                     mod.files,
                     mod.category,
                 );
-                mod.coreComponents = inferCoreComponents(mod.files);
+                mod.coreComponents =
+                    symbolsByFile.size > 0
+                        ? componentsFromSymbols(symbolsByFile)
+                        : inferCoreComponents(mod.files);
             }
         });
     } else {
-        // 无 LLM，使用基于结构的启发式描述
+        // 无 LLM，使用基于结构的启发式描述（有符号时核心组件来自 AST）
         for (const mod of modules) {
             mod.summary = generateBasicSummary(
                 mod.moduleName,
@@ -299,7 +375,11 @@ export async function analyzeModules(
                 mod.files,
                 mod.category,
             );
-            mod.coreComponents = inferCoreComponents(mod.files);
+            const symbolsByFile = await collectModuleSymbols(rootPath, mod.files);
+            mod.coreComponents =
+                symbolsByFile.size > 0
+                    ? componentsFromSymbols(symbolsByFile)
+                    : inferCoreComponents(mod.files);
         }
     }
 

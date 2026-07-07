@@ -67,6 +67,11 @@
         {
           "id": "repowiki.wikiTree",
           "name": "Wiki Catalog"
+        },
+        {
+          "type": "webview",
+          "id": "repowiki.chatView",
+          "name": "Ask Wiki"
         }
       ]
     },
@@ -88,18 +93,19 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run build",
-    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
-    "dev": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
+    "build": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/tree-sitter-wasm --outfile=dist/extension.js && node scripts/copy-wasm.mjs",
+    "dev": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --external:@vscode/tree-sitter-wasm --outfile=dist/extension.js --watch",
     "typecheck": "tsc --noEmit",
     "package": "vsce package --no-dependencies",
     "clean": "rimraf dist"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "rimraf": "^5.0.0",
-    "esbuild": "^0.23.0",
-    "@vscode/vsce": "^3.0.0",
+    "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
-    "@types/node": "^20.0.0"
+    "@vscode/tree-sitter-wasm": "^0.3.1",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.23.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.5.0"
   }
 }

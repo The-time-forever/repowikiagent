@@ -1,11 +1,20 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { WikiTreeProvider } from './views/WikiTreeProvider.js';
+import { ChatViewProvider } from './views/ChatViewProvider.js';
 import { CitationLinkProvider, openCitation } from './providers/CitationLinkProvider.js';
 import { registerGenerateWiki } from './commands/generateWiki.js';
 import { registerOpenWiki } from './commands/openWiki.js';
 import { registerConfigureModel } from './commands/configureModel.js';
 
 export function activate(context: vscode.ExtensionContext) {
+    // tree-sitter WASM 目录（构建时拷贝进 dist/ts-wasm）；缺失时 core 自动降级为无符号大纲
+    const wasmDir = path.join(context.extensionPath, 'dist', 'ts-wasm');
+    if (fs.existsSync(wasmDir)) {
+        process.env['REPOWIKI_TS_WASM_DIR'] = wasmDir;
+    }
+
     const output = vscode.window.createOutputChannel('RepoWiki');
     context.subscriptions.push(output);
 
@@ -15,7 +24,16 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerTreeDataProvider('repowiki.wikiTree', treeProvider),
     );
 
-    const refreshSidebar = () => treeProvider.refresh();
+    // 侧边栏：问答面板
+    const chatProvider = new ChatViewProvider();
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider),
+    );
+
+    const refreshSidebar = () => {
+        treeProvider.refresh();
+        chatProvider.invalidateIndex();
+    };
 
     // 命令
     registerGenerateWiki(context, refreshSidebar, output);
