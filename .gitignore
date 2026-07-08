@@ -41,3 +41,6 @@ _tmp_*
 # Config (sensitive)
 .npmrc
 .repowiki/
+
+# Local test data (durations, token usage, raw event logs)
+test-reports/

@@ -12,7 +12,7 @@ export type { ProviderPreset } from './providers.js';
 export { PROVIDER_PRESETS, findProviderByEndpoint } from './providers.js';
 
 // LLM 客户端
-export type { ChatMessage, LLMClientOptions, LLMResponse, ChatOptions } from './llm-client.js';
+export type { ChatMessage, LLMClientOptions, LLMResponse, ChatOptions, UsageTotals } from './llm-client.js';
 export { LLMClient, LLMError, LLMAuthError, LLMRateLimitError, LLMJsonParseError } from './llm-client.js';
 
 // 提示词管理

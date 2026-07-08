@@ -30,7 +30,7 @@ export interface LLMClientOptions {
     maxRetries?: number;
     /** 基础重试延迟，毫秒 (默认 1000) */
     retryDelayMs?: number;
-    /** 请求超时，毫秒 (默认 120000，即 2 分钟) */
+    /** 请求超时，毫秒 (默认 300000，即 5 分钟；长页面生成在慢速端点上常超过 2 分钟) */
     timeoutMs?: number;
 }
 
@@ -44,6 +44,15 @@ export interface LLMResponse {
         completionTokens: number;
         totalTokens: number;
     };
+}
+
+/** 客户端累计用量 */
+export interface UsageTotals {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    /** 成功的 LLM 调用次数 */
+    calls: number;
 }
 
 /** chat 方法可选参数 */
@@ -164,12 +173,19 @@ export class LLMClient {
     private readonly maxRetries: number;
     private readonly retryDelayMs: number;
     private readonly timeoutMs: number;
+    /** 本客户端生命周期内的累计用量（chatJSON/chatWithValidation 均经由 chat，单点累计） */
+    private readonly usageTotals: UsageTotals = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        calls: 0,
+    };
 
     constructor(options: LLMClientOptions) {
         this.config = options.config;
         this.maxRetries = options.maxRetries ?? 3;
         this.retryDelayMs = options.retryDelayMs ?? 1000;
-        this.timeoutMs = options.timeoutMs ?? 120_000;
+        this.timeoutMs = options.timeoutMs ?? 300_000;
     }
 
     /**
@@ -196,8 +212,15 @@ export class LLMClient {
             }
 
             try {
-                const response = await this.fetchWithTimeout(url, body);
-                return this.parseResponse(response);
+                const responseBody = await this.fetchWithTimeout(url, body);
+                const parsed = this.parseResponse(responseBody);
+                this.usageTotals.calls += 1;
+                if (parsed.usage) {
+                    this.usageTotals.promptTokens += parsed.usage.promptTokens;
+                    this.usageTotals.completionTokens += parsed.usage.completionTokens;
+                    this.usageTotals.totalTokens += parsed.usage.totalTokens;
+                }
+                return parsed;
             } catch (error) {
                 lastError = error as Error;
 
@@ -220,6 +243,11 @@ export class LLMClient {
 
         // 重试耗尽
         throw lastError ?? new LLMError('LLM 请求失败: 未知错误');
+    }
+
+    /** 本客户端生命周期内的累计 token 用量与调用次数 */
+    getUsageTotals(): UsageTotals {
+        return { ...this.usageTotals };
     }
 
     /**
@@ -335,7 +363,7 @@ export class LLMClient {
     /**
      * 带超时控制的 fetch 请求
      */
-    private async fetchWithTimeout(url: string, body: string): Promise<Response> {
+    private async fetchWithTimeout(url: string, body: string): Promise<string> {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -356,7 +384,9 @@ export class LLMClient {
                 this.handleErrorStatus(response.status, responseBody);
             }
 
-            return response;
+            // 响应体必须在超时窗口内读完：网络中断（如系统休眠）时
+            // body 读取会无限悬挂，abort 信号需要覆盖到这里
+            return await response.text();
         } catch (error) {
             if (error instanceof LLMError) {
                 throw error;
@@ -410,10 +440,10 @@ export class LLMClient {
     }
 
     /**
-     * 从 OpenAI 兼容响应中解析内容和 usage
+     * 从 OpenAI 兼容响应体中解析内容和 usage
      */
-    private async parseResponse(response: Response): Promise<LLMResponse> {
-        const json = (await response.json()) as {
+    private parseResponse(bodyText: string): LLMResponse {
+        let json: {
             choices?: Array<{ message?: { content?: string } }>;
             usage?: {
                 prompt_tokens?: number;
@@ -421,6 +451,11 @@ export class LLMClient {
                 total_tokens?: number;
             };
         };
+        try {
+            json = JSON.parse(bodyText);
+        } catch {
+            throw new LLMError(`响应不是合法 JSON: ${bodyText.slice(0, 200)}`);
+        }
 
         const content = json.choices?.[0]?.message?.content ?? '';
 

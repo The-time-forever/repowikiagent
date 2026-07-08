@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { loadLLMConfig, LLMClient, validateConfig } from './llm/index.js';
+import { loadLLMConfig, LLMClient, validateConfig, type UsageTotals } from './llm/index.js';
 import { scanDirectory } from './scanner/index.js';
 import { buildTreeString } from './scanner/tree-builder.js';
 import { detectTechStack, detectEntrypoints, buildDependencyGraph } from './detector/index.js';
@@ -46,7 +46,7 @@ export type PipelineEvent =
     | { type: 'PROGRESS'; stage: string; progress: number; message: string }
     | { type: 'WARN'; stage: string; message: string }
     | { type: 'DRY_RUN'; report: DryRunReport }
-    | { type: 'DONE'; payload: { docsPath: string; pagesCount: number } }
+    | { type: 'DONE'; payload: { docsPath: string; pagesCount: number; usage?: UsageTotals } }
     | { type: 'ERROR'; code: number; message: string };
 
 /**
@@ -116,6 +116,12 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             }
         } else {
             emitProgress('Pre-flight', 10, '已开启免大模型（skip-llm）生成模式...');
+        }
+
+        // 强制重建时先清空内容目录：目录规划可能与上次不同，
+        // 避免旧文件名的孤儿页面残留（content 目录整体为生成产物，可安全清理）
+        if (forceRebuild && !dryRun) {
+            await fs.rm(contentDir, { recursive: true, force: true });
         }
 
         // 确保输出目录存在
@@ -201,7 +207,11 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
 
             let report: DryRunReport;
             if (incrementalMode && existingMetadata) {
-                const changes = await computeChangeSets(workspacePath, existingMetadata);
+                const changes = await computeChangeSets(
+                    workspacePath,
+                    existingMetadata,
+                    files.map((f) => f.relativePath),
+                );
                 const catalogNodes = existingMetadata.wiki_catalogs.map(entryToCatalogNode);
                 const { stale, orphaned } = findStale(catalogNodes, changes);
 
@@ -255,6 +265,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
                     labels,
                     fileMeta,
                     concurrency,
+                    scannedFiles: files.map((f) => f.relativePath),
                     onWarn: (message) => emitWarn('Incremental', message),
                 });
 
@@ -283,6 +294,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
                     payload: {
                         docsPath: path.resolve(paths.langRoot),
                         pagesCount: result.regenerated.length,
+                        usage: llmClient?.getUsageTotals(),
                     },
                 };
                 if (onProgress) onProgress(doneEvent);
@@ -373,6 +385,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             gitCommit,
             timestamp: new Date().toISOString(),
             readmeContent: homeContent,
+            scannedFiles: files.map((f) => f.relativePath),
         });
         await writeMetadata(paths.metadataFile, metadata);
 
@@ -386,6 +399,7 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             payload: {
                 docsPath: path.resolve(paths.langRoot),
                 pagesCount: generatedPages.length + 2, // 包含 Home.md, _Sidebar.md
+                usage: llmClient?.getUsageTotals(),
             },
         };
 

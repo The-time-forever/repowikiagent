@@ -54,6 +54,8 @@ export interface IncrementalDeps {
     labels: WikiLabels;
     fileMeta: Map<string, number>;
     concurrency: number;
+    /** 本次扫描到的全部非忽略文件（posix 相对路径）；无 git 项目靠它检测新增 */
+    scannedFiles?: string[];
     /** 非致命问题上报通道（缺省静默） */
     onWarn?: (message: string) => void;
 }
@@ -84,6 +86,8 @@ export function entryToCatalogNode(e: WikiCatalogEntry): CatalogNode {
 export async function computeChangeSets(
     rootPath: string,
     metadata: RepowikiMetadata,
+    /** 本次扫描到的全部文件（posix 相对路径）；提供且元数据记录过 scanned_files 时，hash 模式才能检测新增 */
+    currentFiles?: string[],
 ): Promise<ChangeSets> {
     const changed = new Set<string>();
     const added = new Set<string>();
@@ -112,6 +116,14 @@ export async function computeChangeSets(
         const fp = await fingerprintFile(rootPath, rel);
         if (fp === null) deleted.add(rel);
         else if (fp !== oldFp) changed.add(rel);
+    }
+    // 新增检测：与生成时记录的全量扫描清单比对（旧元数据无 scanned_files 时跳过）
+    if (currentFiles && metadata.scanned_files && metadata.scanned_files.length > 0) {
+        const baseline = new Set(metadata.scanned_files.map(norm));
+        for (const f of currentFiles) {
+            const p = norm(f);
+            if (!baseline.has(p)) added.add(p);
+        }
     }
     return { changed, added, deleted, method: 'hash' };
 }
@@ -264,7 +276,7 @@ export function assignAddedFiles(catalog: CatalogNode[], addedFiles: Iterable<st
 export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<IncrementalResult> {
     const { workspacePath, contentDir, metadataFile, metadata, analysisResult } = deps;
 
-    const changes = await computeChangeSets(workspacePath, metadata);
+    const changes = await computeChangeSets(workspacePath, metadata, deps.scannedFiles);
     const changedFiles = changes.changed.size + changes.deleted.size + changes.added.size;
 
     const catalog = metadata.wiki_catalogs.map(entryToCatalogNode);
@@ -441,8 +453,11 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
     await fs.writeFile(path.join(contentDir, 'Home.md'), homeContent, 'utf-8');
     metadata.wiki_readme.content = homeContent;
 
-    // 更新 generated_at_commit
+    // 更新 generated_at_commit 与扫描清单快照
     metadata.generated_at_commit = (await getGitCommit(workspacePath)) ?? metadata.generated_at_commit;
+    if (deps.scannedFiles) {
+        metadata.scanned_files = deps.scannedFiles.map(norm);
+    }
 
     await writeMetadata(metadataFile, metadata);
 

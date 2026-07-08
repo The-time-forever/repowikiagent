@@ -153,3 +153,35 @@ describe('entryToCatalogNode', () => {
         });
     });
 });
+
+describe('computeChangeSets (hash 模式新增检测)', () => {
+    it('有 scanned_files 基线时检出新增文件', async () => {
+        const os = await import('node:os');
+        const fs = await import('node:fs/promises');
+        const path = await import('node:path');
+        const { computeChangeSets } = await import('../dist/index.js');
+
+        const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'rw-cs-'));
+        await fs.writeFile(path.join(dir, 'a.ts'), 'export const a = 1;\n');
+
+        const metadata = {
+            source_index: {},
+            generated_at_commit: null,
+            scanned_files: ['a.ts'],
+        } as any;
+
+        // 新扫描包含 a.ts（已有）与 b/new.ts（新增）
+        const changes = await computeChangeSets(dir, metadata, ['a.ts', 'b/new.ts']);
+        expect(changes.method).toBe('hash');
+        expect([...changes.added]).toEqual(['b/new.ts']);
+
+        await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    it('旧元数据缺失 scanned_files 时不误报新增', async () => {
+        const { computeChangeSets } = await import('../dist/index.js');
+        const metadata = { source_index: {}, generated_at_commit: null } as any;
+        const changes = await computeChangeSets('.', metadata, ['x.ts']);
+        expect(changes.added.size).toBe(0);
+    });
+});

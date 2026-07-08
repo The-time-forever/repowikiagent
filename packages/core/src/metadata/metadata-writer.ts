@@ -74,6 +74,8 @@ export interface RepowikiMetadata {
     lang: WikiLang;
     generated_at_commit: string | null;
     source_index: Record<string, string>;
+    /** 生成时扫描到的全部非忽略文件（posix 相对路径）；无 git 项目靠它检测新增文件。旧元数据可能缺失 */
+    scanned_files?: string[];
 }
 
 export interface BuildMetadataParams {
@@ -88,6 +90,8 @@ export interface BuildMetadataParams {
     readmeContent: string;
     /** 复用上一版元数据的 gmt_create（保持创建时间稳定）；缺省用 timestamp */
     priorCreate?: Map<string, string>;
+    /** 本次扫描到的全部非忽略文件（posix 相对路径） */
+    scannedFiles?: string[];
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -179,6 +183,7 @@ export function buildMetadata(params: BuildMetadataParams): RepowikiMetadata {
         lang,
         generated_at_commit: gitCommit,
         source_index: sourceIndex,
+        scanned_files: params.scannedFiles ?? [],
     };
 }
 

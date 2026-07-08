@@ -121,6 +121,12 @@ export const generateCommand = new Command('generate')
                 console.log(`  输出目录  ${chalk.cyan(event.payload.docsPath)}`);
                 console.log(`  页面数    ${event.payload.pagesCount}`);
                 console.log(`  耗时      ${formatElapsed()}`);
+                const usage = event.payload.usage;
+                if (usage && usage.calls > 0) {
+                    console.log(
+                        `  LLM 用量  ${usage.calls} 次调用 / 输入 ${usage.promptTokens} tok / 输出 ${usage.completionTokens} tok`,
+                    );
+                }
                 if (warnCount > 0) {
                     console.log(`  警告      ${chalk.yellow(warnCount)} 条（见上方 warn 行）`);
                 }
