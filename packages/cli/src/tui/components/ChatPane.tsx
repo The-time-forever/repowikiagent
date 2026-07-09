@@ -60,9 +60,16 @@ export function ChatPane(props: Props) {
     const lines = useMemo(() => {
         const all: LogLine[] = [];
         for (const entry of chat.entries) all.push(...entryLines(entry, contentWidth));
-        if (chat.pending) all.push({ text: '思考中...', dim: true });
+        if (chat.pending) {
+            if (chat.draft) {
+                // 流式草稿：逐段增长，末尾光标示意生成中
+                for (const l of wrapLines(chat.draft + ' ▌', contentWidth)) all.push({ text: l });
+            } else {
+                all.push({ text: '思考中...', dim: true });
+            }
+        }
         return all;
-    }, [chat.entries, chat.pending, contentWidth]);
+    }, [chat.entries, chat.pending, chat.draft, contentWidth]);
 
     const maxScroll = Math.max(0, lines.length - logHeight);
     const start = Math.max(0, lines.length - logHeight - Math.min(chat.scrollOffset, maxScroll));

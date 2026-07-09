@@ -459,6 +459,19 @@ export async function runIncrementalUpdate(deps: IncrementalDeps): Promise<Incre
         metadata.scanned_files = deps.scannedFiles.map(norm);
     }
 
+    // 记录本轮实测 LLM 用量（驱动后续 dry-run 校准）；离线增量（无 llmClient）保留旧值
+    const usage = deps.llmClient?.getUsageTotals();
+    const regeneratedContentPages = [...staleAll, ...createdNodes].filter((n) => !n.isSection).length;
+    if (usage && usage.calls > 0 && regeneratedContentPages > 0) {
+        metadata.usage_stats = {
+            prompt_tokens: usage.promptTokens,
+            completion_tokens: usage.completionTokens,
+            calls: usage.calls,
+            content_pages: regeneratedContentPages,
+            gmt: now,
+        };
+    }
+
     await writeMetadata(metadataFile, metadata);
 
     return {

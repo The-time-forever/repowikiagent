@@ -35,14 +35,33 @@ export const chatCommand = new Command('chat')
                 }
 
                 try {
+                    // 流式逐段输出；printed 记录已展示内容，非流式回退时为空则整体打印
+                    let printed = '';
+                    const onToken = (delta: string) => {
+                        if (!printed) process.stdout.write('\n');
+                        printed += delta;
+                        process.stdout.write(delta);
+                    };
+                    const onStreamReset = () => {
+                        if (printed) {
+                            printed = '';
+                            process.stdout.write(chalk.dim('\n\n[连接中断，正在重试…]\n'));
+                        }
+                    };
                     const answer = await answerQuestion(
                         session.llmClient,
                         pages,
                         question,
                         session.lang,
                         history,
+                        onToken,
+                        onStreamReset,
                     );
-                    console.log('\n' + answer.content.trim());
+                    if (printed) {
+                        process.stdout.write('\n');
+                    } else {
+                        console.log('\n' + answer.content.trim());
+                    }
                     console.log(chalk.dim(`\n来源: ${answer.sources.join('、')}\n`));
 
                     // history 只保留纯 Q/A 文本（不含大体积 context），限量滚动

@@ -1,6 +1,6 @@
 {
   "name": "repowiki-agent",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "RepoWiki 命令行工具",
   "type": "module",
   "license": "MIT",

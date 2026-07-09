@@ -58,6 +58,17 @@ export interface WikiItem {
     gmt_modified: string;
 }
 
+/** 一次生成的实测 LLM 用量快照（驱动后续 dry-run 的校准口径） */
+export interface UsageStats {
+    prompt_tokens: number;
+    completion_tokens: number;
+    /** 成功的 LLM 调用次数 */
+    calls: number;
+    /** 本次实际由 LLM 生成的内容页数（不含 Home/Sidebar/分区页） */
+    content_pages: number;
+    gmt: string;
+}
+
 export interface RepowikiMetadata {
     wiki_repo: {
         id: string;
@@ -76,6 +87,8 @@ export interface RepowikiMetadata {
     source_index: Record<string, string>;
     /** 生成时扫描到的全部非忽略文件（posix 相对路径）；无 git 项目靠它检测新增文件。旧元数据可能缺失 */
     scanned_files?: string[];
+    /** 上次生成的实测 LLM 用量；离线生成（--skip-llm）时缺失 */
+    usage_stats?: UsageStats;
 }
 
 export interface BuildMetadataParams {
@@ -92,6 +105,13 @@ export interface BuildMetadataParams {
     priorCreate?: Map<string, string>;
     /** 本次扫描到的全部非忽略文件（posix 相对路径） */
     scannedFiles?: string[];
+    /** 本次生成的实测 LLM 用量（calls 为 0 时不写入） */
+    usageStats?: {
+        promptTokens: number;
+        completionTokens: number;
+        calls: number;
+        contentPages: number;
+    };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -184,6 +204,17 @@ export function buildMetadata(params: BuildMetadataParams): RepowikiMetadata {
         generated_at_commit: gitCommit,
         source_index: sourceIndex,
         scanned_files: params.scannedFiles ?? [],
+        ...(params.usageStats && params.usageStats.calls > 0
+            ? {
+                  usage_stats: {
+                      prompt_tokens: params.usageStats.promptTokens,
+                      completion_tokens: params.usageStats.completionTokens,
+                      calls: params.usageStats.calls,
+                      content_pages: params.usageStats.contentPages,
+                      gmt: timestamp,
+                  },
+              }
+            : {}),
     };
 }
 

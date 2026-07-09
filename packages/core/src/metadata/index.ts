@@ -19,6 +19,7 @@ export {
     type KnowledgeRelation,
     type WikiItem,
     type BuildMetadataParams,
+    type UsageStats,
 } from './metadata-writer.js';
 
 export {

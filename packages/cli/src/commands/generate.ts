@@ -105,10 +105,14 @@ export const generateCommand = new Command('generate')
                     }
                 }
                 console.log('');
+                const calibratedTag = event.report.calibrated ? chalk.green('[已按上次实测校准] ') : '';
                 console.log(
-                    `  合计: ${totals.pages} 页 / ${totals.llmCalls} 次 LLM 调用 / ` +
+                    `  合计: ${calibratedTag}${totals.pages} 页 / ${totals.llmCalls} 次 LLM 调用 / ` +
                         `输入约 ${Math.round(totals.estInputTokens / 1000)}k tok / 输出约 ${Math.round(totals.estOutputTokens / 1000)}k tok`,
                 );
+                if (event.report.calibrated && pages.length > 0) {
+                    console.log(chalk.dim('  （逐页明细为结构估算，仅供各页体量参考；合计以校准口径为准）'));
+                }
                 for (const note of notes) {
                     console.log(chalk.dim(`  注: ${note}`));
                 }

@@ -13,6 +13,7 @@ import { getLabels, type WikiLabels } from '../i18n/labels.js';
 import { collectGroundedSources, renderGroundedSources } from '../grounding/source-provider.js';
 import { validateCitations, formatCitationErrors } from '../grounding/citation-validator.js';
 import { lintMermaid } from './mermaid-lint.js';
+import { sanitizeWikiPage } from './sanitize.js';
 import {
     buildDefaultCatalog,
     flattenPlannedCatalog,
@@ -186,6 +187,15 @@ export class WikiGenerator {
                     this.labels.lang,
                 );
 
+                const fixPrompt =
+                    this.labels.lang === 'zh'
+                        ? '你上一次的输出存在以下问题，请修正后重新输出完整文档（保持原语言与结构）。' +
+                          '注意：引用的行号必须取自源码上下文中真实出现的 L 行号标记或符号大纲，' +
+                          '不确定精确行号时引用整个符号的起止行。问题列表：'
+                        : 'Your previous output had the following problems. Fix them and output the full corrected document again (same language and structure). ' +
+                          'Note: cited line numbers must come from the real L-number markers or symbol outlines in the source context; ' +
+                          'when unsure, cite the full start-end range of the symbol. Problems:';
+
                 const { content, value: citations, ok } = await this.llmClient.chatWithValidation(
                     prompt,
                     (c) => {
@@ -204,6 +214,7 @@ export class WikiGenerator {
                             error: errorText,
                         };
                     },
+                    { maxFixes: 2, fixPrompt },
                 );
 
                 if (!ok) {
@@ -214,7 +225,7 @@ export class WikiGenerator {
                     title: node.title,
                     filename: node.filename,
                     summary: node.summary,
-                    content,
+                    content: sanitizeWikiPage(content),
                     sourceRefs: citations,
                 };
             } catch (err) {

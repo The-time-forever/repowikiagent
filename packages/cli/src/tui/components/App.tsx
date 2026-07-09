@@ -128,6 +128,8 @@ export function App({ base, initialData }: Props) {
             lang: base.lang,
             topK: base.topK,
             history: state.chat.history,
+            onToken: (delta) => dispatch({ type: 'CHAT_STREAM', delta }),
+            onStreamReset: () => dispatch({ type: 'CHAT_STREAM_RESET' }),
         })
             .then((res) =>
                 dispatch({

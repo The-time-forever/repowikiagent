@@ -86,7 +86,7 @@ export function validateCitations(
         if (!known) {
             errors.push({
                 kind: 'unknown-file',
-                message: `引用了不存在的文件: ${rawPath}`,
+                message: `引用了不存在的文件: ${rawPath}（引用的文件必须是源码上下文中出现的路径）`,
             });
             continue;
         }

@@ -37,6 +37,8 @@ function buildSystemPrompt(lang: WikiLang): string {
 
 /**
  * 回答一个问题。history 为既往轮次的 Q/A 消息（不含 system 与本轮 context）。
+ * onToken 逐段回调流式增量（显示用途）；onStreamReset 在流式中断重试时触发，
+ * 消费方应清空已展示的部分内容。
  */
 export async function answerQuestion(
     llmClient: LLMClient,
@@ -44,6 +46,8 @@ export async function answerQuestion(
     question: string,
     lang: WikiLang,
     history: ChatMessage[] = [],
+    onToken?: (delta: string) => void,
+    onStreamReset?: () => void,
 ): Promise<QaAnswer> {
     const excerpts = pages
         .map(({ entry }) => {
@@ -67,7 +71,7 @@ export async function answerQuestion(
         },
     ];
 
-    const response = await llmClient.chat(messages, { temperature: 0.2 });
+    const response = await llmClient.chat(messages, { temperature: 0.2, onToken, onStreamReset });
     return {
         content: response.content,
         sources: pages.map((p) => p.entry.title),

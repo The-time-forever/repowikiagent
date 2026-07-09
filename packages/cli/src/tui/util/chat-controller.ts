@@ -28,6 +28,10 @@ export interface AskArgs {
     lang: WikiLang;
     topK: number;
     history: ChatMessage[];
+    /** 流式增量回调（显示用途） */
+    onToken?: (delta: string) => void;
+    /** 流式中断重试时触发：消费方应清空已展示的草稿 */
+    onStreamReset?: () => void;
 }
 
 export interface AskResult {
@@ -48,7 +52,15 @@ export async function askQuestion(args: AskArgs): Promise<AskResult> {
     }
 
     const history = args.history.slice(-MAX_HISTORY_MESSAGES);
-    const answer = await answerQuestion(args.llmClient, pages, args.question, args.lang, history);
+    const answer = await answerQuestion(
+        args.llmClient,
+        pages,
+        args.question,
+        args.lang,
+        history,
+        args.onToken,
+        args.onStreamReset,
+    );
 
     const turn: ChatMessage[] = [
         { role: 'user', content: args.question },

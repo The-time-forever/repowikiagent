@@ -18,8 +18,33 @@ export const askCommand = new Command('ask')
         }
 
         try {
-            const answer = await answerQuestion(session.llmClient, pages, question, session.lang);
-            console.log('\n' + answer.content.trim() + '\n');
+            // 流式逐段输出；printed 记录已展示内容，非流式回退时为空则整体打印
+            let printed = '';
+            const onToken = (delta: string) => {
+                if (!printed) process.stdout.write('\n');
+                printed += delta;
+                process.stdout.write(delta);
+            };
+            const onStreamReset = () => {
+                if (printed) {
+                    printed = '';
+                    process.stdout.write(chalk.dim('\n\n[连接中断，正在重试…]\n'));
+                }
+            };
+            const answer = await answerQuestion(
+                session.llmClient,
+                pages,
+                question,
+                session.lang,
+                [],
+                onToken,
+                onStreamReset,
+            );
+            if (printed) {
+                process.stdout.write('\n\n');
+            } else {
+                console.log('\n' + answer.content.trim() + '\n');
+            }
             console.log(chalk.dim(`来源: ${answer.sources.join('、')}`));
         } catch (err: any) {
             console.error(chalk.red('错误: 回答失败:'), err?.message || err);

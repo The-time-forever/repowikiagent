@@ -40,6 +40,8 @@ export {
     lintMermaidBlock,
 } from './mermaid-lint.js';
 
+export { sanitizeWikiPage } from './sanitize.js';
+
 export {
     slugify,
     hashId,

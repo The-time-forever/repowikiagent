@@ -84,6 +84,8 @@ Grounding 纪律（最重要）:
 - 只能基于下方"源码上下文"中出现的文件与代码作出论断；严禁编造不存在的文件、函数、配置或行号。
 - 每个涉及代码的章节末尾必须附 章节来源 块；每个 Mermaid 图后必须附 图表来源 块。
 - 引用格式严格为: [相对路径:起-止](file://相对路径#Lstart-Lend)，其中行号必须来自源码上下文中真实的 L 行号。
+- 引用的行号只能取自源码上下文中的 L 行号标记与符号大纲；不确定精确行号时，引用整个符号的起止行。
+- <cite> 块只列出本页引用的文件路径，一行一个；严禁在其中或页面任何位置编造"文档版本"、"最后更新"等元信息或任何日期——这些信息由程序注入，你不得输出。
 - 通用/结论类章节若无对应代码，用占位行: [本节为通用指导，无需列出章节来源]。
 - 使用清晰的中文，严禁使用任何 Emoji。
 
@@ -96,6 +98,8 @@ Grounding discipline (most important):
 - Only make claims about files and code that appear in the "Source context" below. Never invent files, functions, config keys, or line numbers.
 - Every code-grounded section must end with a "Section sources" block; every Mermaid diagram must be followed by a "Diagram sources" block.
 - Citation format MUST be: [relative/path:start-end](file://relative/path#Lstart-Lend), where the line numbers come from the real L-numbers shown in the source context.
+- Cited line numbers may only come from the L-number markers and symbol outlines in the source context; when unsure, cite the full start-end range of the symbol.
+- The <cite> block lists only the file paths referenced by this page, one per line. Never fabricate metadata such as "document version" / "last updated" or any dates, in the cite block or anywhere else — real dates are injected programmatically; you must not output them.
 - For generic/summary sections with no specific code, use the placeholder line: [This section is general guidance; no sources required].
 - Write in clear English. Do not use emojis.
 

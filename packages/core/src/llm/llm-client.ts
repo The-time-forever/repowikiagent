@@ -30,8 +30,13 @@ export interface LLMClientOptions {
     maxRetries?: number;
     /** 基础重试延迟，毫秒 (默认 1000) */
     retryDelayMs?: number;
-    /** 请求超时，毫秒 (默认 300000，即 5 分钟；长页面生成在慢速端点上常超过 2 分钟) */
+    /**
+     * 请求超时，毫秒 (默认 300000，即 5 分钟)。
+     * 流式模式下为**空闲超时**（相邻数据块间隔上限）；非流式为整体超时。
+     */
     timeoutMs?: number;
+    /** 使用流式响应 (默认 true)；端点不支持时自动降级非流式 */
+    streaming?: boolean;
 }
 
 /** LLM 响应 */
@@ -61,6 +66,10 @@ export interface ChatOptions {
     temperature?: number;
     /** 最大生成 token 数 */
     maxTokens?: number;
+    /** 流式增量回调：每收到一段内容触发一次（仅流式模式；显示用途，最终完整内容以返回值为准） */
+    onToken?: (delta: string) => void;
+    /** 流式中断重试时触发：消费方应清空已展示的部分内容 */
+    onStreamReset?: () => void;
 }
 
 // ============================================================================
@@ -173,6 +182,7 @@ export class LLMClient {
     private readonly maxRetries: number;
     private readonly retryDelayMs: number;
     private readonly timeoutMs: number;
+    private readonly streaming: boolean;
     /** 本客户端生命周期内的累计用量（chatJSON/chatWithValidation 均经由 chat，单点累计） */
     private readonly usageTotals: UsageTotals = {
         promptTokens: 0,
@@ -181,11 +191,15 @@ export class LLMClient {
         calls: 0,
     };
 
+    /** 端点确认不支持流式后置位，后续调用直接走非流式 */
+    private streamingDisabled = false;
+
     constructor(options: LLMClientOptions) {
         this.config = options.config;
         this.maxRetries = options.maxRetries ?? 3;
         this.retryDelayMs = options.retryDelayMs ?? 1000;
         this.timeoutMs = options.timeoutMs ?? 300_000;
+        this.streaming = options.streaming ?? true;
     }
 
     /**
@@ -200,20 +214,24 @@ export class LLMClient {
      */
     async chat(messages: ChatMessage[], options?: ChatOptions): Promise<LLMResponse> {
         const url = `${this.config.apiEndpoint.replace(/\/+$/, '')}/chat/completions`;
-        const body = this.buildRequestBody(messages, options);
 
         let lastError: Error | null = null;
 
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-            // 非首次请求时等待（指数退避）
+            // 非首次请求时等待（指数退避）；流式下通知消费方清空已展示的部分内容
             if (attempt > 0) {
                 const delay = this.retryDelayMs * Math.pow(2, attempt - 1);
                 await sleep(delay);
+                options?.onStreamReset?.();
             }
 
             try {
-                const responseBody = await this.fetchWithTimeout(url, body);
-                const parsed = this.parseResponse(responseBody);
+                const useStream = this.streaming && !this.streamingDisabled;
+                const parsed = useStream
+                    ? await this.requestStream(url, messages, options)
+                    : this.parseResponse(
+                          await this.fetchWithTimeout(url, this.buildRequestBody(messages, options, false)),
+                      );
                 this.usageTotals.calls += 1;
                 if (parsed.usage) {
                     this.usageTotals.promptTokens += parsed.usage.promptTokens;
@@ -306,14 +324,18 @@ export class LLMClient {
      *
      * @param messages - 聊天消息列表
      * @param validate - 校验函数，返回 { ok, value, error }
-     * @param options  - 可选：maxFixes（默认 1）
+     * @param options  - 可选：maxFixes（默认 1）；fixPrompt 纠正提示引导语（默认英文模板，
+     *                   校验错误列表会追加在其后）
      */
     async chatWithValidation<T>(
         messages: ChatMessage[],
         validate: (content: string) => { ok: boolean; value: T; error?: string },
-        options?: { maxFixes?: number },
+        options?: { maxFixes?: number; fixPrompt?: string },
     ): Promise<{ content: string; value: T; ok: boolean }> {
         const maxFixes = options?.maxFixes ?? 1;
+        const fixPrompt =
+            options?.fixPrompt ??
+            'Your previous output had the following problems. Fix them and output the full corrected document again (same language as before):';
 
         let current = messages;
         let last = await this.chat(current);
@@ -327,9 +349,7 @@ export class LLMClient {
                 { role: 'assistant', content: last.content },
                 {
                     role: 'user',
-                    content:
-                        'Your previous output had the following problems. Fix them and output the full corrected document again (same language as before):\n' +
-                        (result.error ?? ''),
+                    content: `${fixPrompt}\n${result.error ?? ''}`,
                 },
             ];
             last = await this.chat(current);
@@ -346,7 +366,12 @@ export class LLMClient {
     /**
      * 构建 OpenAI 兼容的请求体
      */
-    private buildRequestBody(messages: ChatMessage[], options?: ChatOptions): string {
+    private buildRequestBody(
+        messages: ChatMessage[],
+        options: ChatOptions | undefined,
+        stream: boolean,
+        streamUsage = true,
+    ): string {
         const payload: Record<string, unknown> = {
             model: this.config.modelName,
             messages: messages.map((m) => ({ role: m.role, content: m.content })),
@@ -357,7 +382,172 @@ export class LLMClient {
             payload['max_tokens'] = options.maxTokens;
         }
 
+        if (stream) {
+            payload['stream'] = true;
+            // stream_options 请求供应商在末 chunk 回传 usage；个别端点不识别该参数
+            if (streamUsage) {
+                payload['stream_options'] = { include_usage: true };
+            }
+        }
+
         return JSON.stringify(payload);
+    }
+
+    /**
+     * 流式请求入口：处理端点不支持流式时的降级。
+     *
+     * 400/404 可能是端点不识别 `stream_options` 或 `stream` 参数：
+     * 先去掉 stream_options 重试一次；仍失败则置 {@link streamingDisabled}
+     * 并在同一 attempt 内改发非流式（不消耗 chat() 的重试次数）。
+     */
+    private async requestStream(
+        url: string,
+        messages: ChatMessage[],
+        options?: ChatOptions,
+    ): Promise<LLMResponse> {
+        try {
+            return await this.fetchStream(url, this.buildRequestBody(messages, options, true), options);
+        } catch (error) {
+            if (!(error instanceof LLMError) || (error.statusCode !== 400 && error.statusCode !== 404)) {
+                throw error;
+            }
+        }
+
+        try {
+            return await this.fetchStream(
+                url,
+                this.buildRequestBody(messages, options, true, false),
+                options,
+            );
+        } catch (error) {
+            if (!(error instanceof LLMError) || (error.statusCode !== 400 && error.statusCode !== 404)) {
+                throw error;
+            }
+        }
+
+        this.streamingDisabled = true;
+        return this.parseResponse(
+            await this.fetchWithTimeout(url, this.buildRequestBody(messages, options, false)),
+        );
+    }
+
+    /**
+     * 发送流式请求并解析 SSE 响应。
+     *
+     * 超时语义为**空闲超时**：abort 定时器在每个数据块到达时重置，
+     * 只要数据持续流动就不会超时；网络中断（如系统休眠）时最多等待 timeoutMs。
+     */
+    private async fetchStream(url: string, body: string, options?: ChatOptions): Promise<LLMResponse> {
+        const controller = new AbortController();
+        let timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        const resetIdle = () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        };
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.config.apiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body,
+                signal: controller.signal,
+            });
+
+            if (!response.ok) {
+                const responseBody = await response.text().catch(() => '');
+                this.handleErrorStatus(response.status, responseBody);
+            }
+
+            // 供应商忽略 stream 参数直接回整体 JSON 的情形：按非流式解析
+            // （body 读取仍受同一 abort 信号保护）
+            const contentType = response.headers.get('content-type') ?? '';
+            if (!contentType.includes('text/event-stream')) {
+                return this.parseResponse(await response.text());
+            }
+
+            const reader = response.body?.getReader();
+            if (!reader) {
+                return this.parseResponse(await response.text());
+            }
+
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let content = '';
+            let usage: LLMResponse['usage'];
+
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+                resetIdle();
+                buffer += decoder.decode(value, { stream: true });
+
+                let newlineIndex: number;
+                while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+                    const line = buffer.slice(0, newlineIndex).replace(/\r$/, '');
+                    buffer = buffer.slice(newlineIndex + 1);
+
+                    if (!line.startsWith('data:')) {
+                        continue;
+                    }
+                    const data = line.slice(5).trim();
+                    if (!data || data === '[DONE]') {
+                        continue;
+                    }
+
+                    let chunk: {
+                        choices?: Array<{ delta?: { content?: string } }>;
+                        usage?: {
+                            prompt_tokens?: number;
+                            completion_tokens?: number;
+                            total_tokens?: number;
+                        };
+                    };
+                    try {
+                        chunk = JSON.parse(data);
+                    } catch {
+                        continue;
+                    }
+
+                    const delta = chunk.choices?.[0]?.delta?.content;
+                    if (typeof delta === 'string' && delta.length > 0) {
+                        content += delta;
+                        options?.onToken?.(delta);
+                    }
+                    if (chunk.usage) {
+                        usage = {
+                            promptTokens: chunk.usage.prompt_tokens ?? 0,
+                            completionTokens: chunk.usage.completion_tokens ?? 0,
+                            totalTokens: chunk.usage.total_tokens ?? 0,
+                        };
+                    }
+                }
+            }
+
+            const result: LLMResponse = { content };
+            if (usage) {
+                result.usage = usage;
+            }
+            return result;
+        } catch (error) {
+            if (error instanceof LLMError) {
+                throw error;
+            }
+
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                throw new LLMError(`流式响应空闲超时 (${this.timeoutMs}ms 无数据)`);
+            }
+
+            throw new LLMError(
+                `网络请求失败: ${error instanceof Error ? error.message : '未知错误'}`,
+            );
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     /**

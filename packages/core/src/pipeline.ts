@@ -205,6 +205,18 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
         if (dryRun) {
             emitProgress('DryRun', 70, '估算生成成本（不调用 LLM、不写入文件）...');
 
+            // 上次实测用量（若有）：dry-run 输出"已按上次实测校准"的口径。
+            // force-rebuild 时 existingMetadata 为 null，但校准仍可用盘上元数据。
+            const usageSource = existingMetadata ?? (await readMetadata(paths.metadataFile));
+            const priorUsage = usageSource?.usage_stats
+                ? {
+                      promptTokens: usageSource.usage_stats.prompt_tokens,
+                      completionTokens: usageSource.usage_stats.completion_tokens,
+                      calls: usageSource.usage_stats.calls,
+                      contentPages: usageSource.usage_stats.content_pages,
+                  }
+                : undefined;
+
             let report: DryRunReport;
             if (incrementalMode && existingMetadata) {
                 const changes = await computeChangeSets(
@@ -231,17 +243,29 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
                     }
                 }
 
-                report = await buildDryRunReport(workspacePath, stale, analysisResult, 'incremental', [
-                    `变更文件 ${changes.changed.size + changes.deleted.size + changes.added.size}，受影响 ${stale.length} 页，将删除 ${orphaned.length} 页。`,
-                    ...(unassigned.length > 0
-                        ? [`${unassigned.length} 个新增文件暂无归属页面。`]
-                        : []),
-                ]);
+                report = await buildDryRunReport(
+                    workspacePath,
+                    stale,
+                    analysisResult,
+                    'incremental',
+                    [
+                        `变更文件 ${changes.changed.size + changes.deleted.size + changes.added.size}，受影响 ${stale.length} 页，将删除 ${orphaned.length} 页。`,
+                        ...(unassigned.length > 0
+                            ? [`${unassigned.length} 个新增文件暂无归属页面。`]
+                            : []),
+                    ],
+                    priorUsage,
+                );
             } else {
                 const catalogNodes = buildDefaultCatalog(analysisResult, labels, strategy, slugFilenames);
-                report = await buildDryRunReport(workspacePath, catalogNodes, analysisResult, 'full', [
-                    '目录按确定性建树估算；启用 LLM 规划时实际目录可能不同，且另有 1 次规划调用。',
-                ]);
+                report = await buildDryRunReport(
+                    workspacePath,
+                    catalogNodes,
+                    analysisResult,
+                    'full',
+                    ['目录按确定性建树估算；启用 LLM 规划时实际目录可能不同，且另有 1 次规划调用。'],
+                    priorUsage,
+                );
             }
 
             if (onProgress) onProgress({ type: 'DRY_RUN', report });
@@ -386,6 +410,12 @@ export async function runPipeline(options: PipelineOptions): Promise<AnalysisRes
             timestamp: new Date().toISOString(),
             readmeContent: homeContent,
             scannedFiles: files.map((f) => f.relativePath),
+            usageStats: llmClient
+                ? {
+                      ...llmClient.getUsageTotals(),
+                      contentPages: catalog.filter((n) => !n.isSection).length,
+                  }
+                : undefined,
         });
         await writeMetadata(paths.metadataFile, metadata);
 

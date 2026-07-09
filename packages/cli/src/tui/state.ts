@@ -38,6 +38,8 @@ export interface AppState {
         history: ChatMessage[];
         mode: ChatContextMode;
         pending: boolean;
+        /** 流式回答的草稿内容（pending 期间逐段累加，最终由 CHAT_ANSWERED 替换） */
+        draft: string | null;
         scrollOffset: number; // 距底部的行数，0 = 贴底
     };
     generate: GenerateState;
@@ -60,6 +62,8 @@ export type Action =
     | { type: 'SOURCE_MOVE'; delta: number; count: number }
     | { type: 'CHAT_SET_MODE'; mode: ChatContextMode }
     | { type: 'CHAT_ASK'; question: string }
+    | { type: 'CHAT_STREAM'; delta: string }
+    | { type: 'CHAT_STREAM_RESET' }
     | { type: 'CHAT_ANSWERED'; entry: ChatEntry; history: ChatMessage[] }
     | { type: 'CHAT_FAILED'; message: string }
     | { type: 'CHAT_INFO'; message: string }
@@ -97,7 +101,7 @@ export function buildInitialState(tree: WikiTreeNode[], hasWiki: boolean): AppSt
         focus: 'tree',
         tree: initialTreeState(tree),
         page: { currentId: null, scrollOffset: 0, view: 'content', sourceCursor: 0 },
-        chat: { entries: [], history: [], mode: 'repo', pending: false, scrollOffset: 0 },
+        chat: { entries: [], history: [], mode: 'repo', pending: false, draft: null, scrollOffset: 0 },
         generate: emptyGenerate({ forceRebuild: false, skipLlm: false }),
         requestedOpts: null,
         pendingUpdate: null,
@@ -177,16 +181,27 @@ export function reducer(state: AppState, action: Action): AppState {
                 chat: {
                     ...state.chat,
                     pending: true,
+                    draft: null,
                     scrollOffset: 0,
                     entries: [...state.chat.entries, { role: 'user', text: action.question }],
                 },
             };
+        case 'CHAT_STREAM':
+            // 非 pending 时的迟到增量直接丢弃（例如已 CHAT_FAILED）
+            if (!state.chat.pending) return state;
+            return {
+                ...state,
+                chat: { ...state.chat, draft: (state.chat.draft ?? '') + action.delta, scrollOffset: 0 },
+            };
+        case 'CHAT_STREAM_RESET':
+            return { ...state, chat: { ...state.chat, draft: null } };
         case 'CHAT_ANSWERED':
             return {
                 ...state,
                 chat: {
                     ...state.chat,
                     pending: false,
+                    draft: null,
                     scrollOffset: 0,
                     entries: [...state.chat.entries, action.entry],
                     history: action.history,
@@ -198,6 +213,7 @@ export function reducer(state: AppState, action: Action): AppState {
                 chat: {
                     ...state.chat,
                     pending: false,
+                    draft: null,
                     scrollOffset: 0,
                     entries: [...state.chat.entries, { role: 'error', text: action.message }],
                 },
@@ -269,7 +285,7 @@ export function reducer(state: AppState, action: Action): AppState {
         case 'RELOADED':
             return {
                 ...buildInitialState(action.tree, action.hasWiki),
-                chat: { ...state.chat, history: [], pending: false },
+                chat: { ...state.chat, history: [], pending: false, draft: null },
                 status: action.hasWiki ? 'Wiki 已更新' : null,
             };
         default:

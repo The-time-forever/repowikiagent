@@ -148,7 +148,7 @@ repowiki ask "How does incremental update work?"
 repowiki chat          # multi-turn REPL, /exit to quit
 ```
 
-Retrieval runs locally over the generated wiki (no vector DB); answers cite page names and `file://path#L10-L42` source references.
+Retrieval runs locally over the generated wiki (no vector DB); answers cite page names and `file://path#L10-L42` source references. Answers stream token-by-token in `ask`, `chat`, and the TUI; all LLM requests use streaming under the hood, so `timeoutMs` acts as an **idle timeout** (max gap between chunks) rather than a whole-request limit — long generations no longer race a fixed clock. Endpoints without SSE support fall back to non-streaming automatically.
 
 ### Interactive terminal UI (TUI)
 
