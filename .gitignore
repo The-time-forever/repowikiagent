@@ -27,8 +27,8 @@ Thumbs.db
 coverage/
 .nyc_output/
 
-# Internal docs
-development.md
+# Internal docs (requirement docs, local machine notes — never commit)
+requirements/
 
 # Logs
 *.log
